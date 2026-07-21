@@ -121,6 +121,33 @@ pool.query(`
 
 // MySQL auto-manages AUTO_INCREMENT — no sequence reset needed
 
+// Seed/upgrade payment_types on startup
+(async () => {
+  const ptDefaults = [
+    { id: 'PT-1', name: 'Tunai' },
+    { id: 'PT-4', name: 'Transfer' },
+    { id: 'PT-5', name: 'Kredit 1 Hari' },
+    { id: 'PT-6', name: 'Kredit 7 Hari' },
+    { id: 'PT-7', name: 'Kredit 14 Hari' },
+    { id: 'PT-8', name: 'Kredit 30 Hari' },
+  ];
+  try {
+    for (const pt of ptDefaults) {
+      await pool.query(
+        `INSERT INTO payment_types (id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+        [pt.id, pt.name]
+      );
+    }
+    // Rename 'Tempo' → keep for historical data but don't show in new dropdowns
+    // We simply don't insert it — existing PT-2 rows remain intact in old invoices
+    // Remove PT-2 Tempo — replaced by Kredit X Hari types
+    await pool.query(`DELETE FROM payment_types WHERE id = 'PT-2'`).catch(() => {});
+    console.log('[Startup] payment_types seeded/upgraded successfully.');
+  } catch (err) {
+    console.error('[Startup] Failed to seed payment_types:', err.message);
+  }
+})();
+
 // Seed/upgrade cash_categories to the canonical defaults (MySQL-compatible)
 (async () => {
   // MySQL: UNIQUE constraint already defined in schema — no pg_constraint check needed
@@ -174,7 +201,7 @@ pool.query(`
 // Settings & Prefix Helpers
 async function getSetting(key, defaultValue) {
   try {
-    const res = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
+    const res = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
     if (res.rows.length > 0) {
       return res.rows[0].value;
     }
@@ -182,6 +209,21 @@ async function getSetting(key, defaultValue) {
     console.error(`getSetting error for key ${key}:`, err);
   }
   return defaultValue;
+}
+
+/**
+ * Returns true if payment type means instant settlement (Tunai / Transfer).
+ * Any type whose name starts with 'Kredit' is treated as credit/tempo.
+ */
+async function isInstantPayment(payment_type_id) {
+  try {
+    const res = await pool.query('SELECT name FROM payment_types WHERE id = ?', [payment_type_id]);
+    const name = (res.rows[0]?.name || '').toLowerCase();
+    // Kredit X Hari = tempo; everything else (Tunai, Transfer) = instant
+    return !name.startsWith('kredit');
+  } catch (err) {
+    return true; // default: treat as instant on error
+  }
 }
 
 async function generateNextId(clientOrPool, tableName, prefixSetting) {
@@ -955,7 +997,7 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
       WHERE ii.invoice_id = $1
     `, [id]);
     
-    const settingsRes = await pool.query(`SELECT key, value FROM settings WHERE key IN ('company_name', 'company_phone', 'company_email', 'company_address', 'company_logo', 'ppn_enabled', 'pajak_default')`);
+    const settingsRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('company_name', 'company_phone', 'company_email', 'company_address', 'company_logo', 'ppn_enabled', 'pajak_default')`);
     const company = {};
     const settingsMap = {};
     settingsRes.rows.forEach(r => {
@@ -966,7 +1008,7 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
     });
 
     // PPN Recalculation logic
-    const ppnEnabled = settingsMap['ppn_enabled'] !== 'false';
+    const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
     const subtotal = parseFloat(invoiceRow.subtotal || 0);
     const diskon = parseFloat(invoiceRow.discount || 0);
@@ -1037,11 +1079,11 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     await client.query('BEGIN');
 
     // Recalculate subtotal and tax to ensure correctness (Masalah A)
-    const settingsRes = await client.query(`SELECT key, value FROM settings WHERE key IN ('ppn_enabled', 'pajak_default')`);
+    const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
     
-    const ppnEnabled = settingsMap['ppn_enabled'] !== 'false';
+    const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
     
     let subtotal = 0;
@@ -1055,13 +1097,20 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     const finalTotal = subtotal - diskon + taxAmount;
 
     const date = req.body.date ? new Date(req.body.date).toISOString() : new Date().toISOString();
-    const status = paid >= finalTotal ? 'Lunas' : (paid > 0 ? 'Sebagian' : 'Belum Bayar');
+
+    // Determine status based on payment type:
+    // Tunai / Transfer = instant settlement (Lunas), Kredit X Hari = Belum Bayar
+    const instant = await isInstantPayment(payment_type_id);
+    const effectivePaid = instant ? finalTotal : parseFloat(paid || 0);
+    const status = instant ? 'Lunas'
+      : (effectivePaid >= finalTotal ? 'Lunas'
+        : (effectivePaid > 0 ? 'Sebagian' : 'Belum Bayar'));
 
     const prefix = await getSetting('prefix_sales', 'INV/{YYYY}/{MM}/');
     const id = await generateNextId(client, 'sales_invoices', prefix);
     
     console.log(`[Invoice Creation API] Saving invoice ${id} with payment_type_id: "${payment_type_id}"`);
-    await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, paid, payment_type_id, due_date, status, userId]);
+    await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, due_date, status, userId]);
 
     // Reduce stock
     if (items && Array.isArray(items)) {
@@ -1078,16 +1127,15 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
       }
     }
 
-    // Log cash transaction IN
-    if (paid > 0) {
+    if (effectivePaid > 0) {
       const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
       const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
       const ctDate = new Date().toISOString().split('T')[0];
-      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = $1', [payment_type_id]);
+      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [payment_type_id]);
       const method = ptNameRes.rows[0]?.name || 'Transfer Bank';
-      const cashCategory = paid >= total ? 'Penjualan' : 'Pelunasan Piutang';
-      console.log(`[Invoice Creation API] Creating cash transaction for invoice ${id}. Paid: ${paid}, payment_type_id: "${payment_type_id}", method name: "${method}"`);
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', [ctId, ctDate, 'IN', cashCategory, `Pembayaran Invoice ${id}`, paid, method, id, payment_type_id, userId]);
+      const cashCategory = status === 'Lunas' ? 'Penjualan' : 'Pelunasan Piutang';
+      console.log(`[Invoice Creation API] Creating cash transaction for invoice ${id}. Paid: ${effectivePaid}, payment_type_id: "${payment_type_id}", method name: "${method}"`);
+      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, ctDate, 'IN', cashCategory, `Pembayaran Invoice ${id}`, effectivePaid, method, id, payment_type_id, userId]);
     }
 
     await client.query('COMMIT');
@@ -1691,7 +1739,7 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
       SELECT c.name, COALESCE(SUM(si.total), 0) AS total_belanja
       FROM sales_invoices si
       JOIN customers c ON c.id = si.customer_id
-      WHERE si.date::DATE BETWEEN $1 AND $2
+      WHERE DATE(si.date) BETWEEN ? AND ?
         AND si.status != 'Dibatalkan' AND si.status != 'Batal'
       GROUP BY c.name
       ORDER BY total_belanja DESC
@@ -1856,16 +1904,22 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
   const pType = payment_type_id || 'PT-1';
   const finalPaid = parseFloat(paid || paid_amount || 0);
   const finalTotal = parseFloat(total || 0);
-  const status = finalPaid >= finalTotal ? 'Selesai' : 'Dalam Proses';
   const poDate = date || new Date().toISOString().split('T')[0];
   const userId = req.user.id;
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Determine if payment type is instant (Tunai/Transfer) or credit (Kredit X Hari)
+    const instant = await isInstantPayment(pType);
+    const effectivePaid = instant ? finalTotal : finalPaid;
+    const status = instant ? 'Selesai'
+      : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
+
     const prefix = await getSetting('prefix_purchase', 'PO/{YYYY}/{MM}/');
     const poId = await generateNextId(client, 'purchase_orders', prefix);
-    await client.query('INSERT INTO purchase_orders (id, date, vendor_id, total, paid_amount, payment_type_id, due_date, status, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [poId, poDate, vId, finalTotal, finalPaid, pType, due_date, status, userId]);
+    await client.query('INSERT INTO purchase_orders (id, date, vendor_id, total, paid_amount, payment_type_id, due_date, status, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [poId, poDate, vId, finalTotal, effectivePaid, pType, due_date, status, userId]);
 
     if (items && Array.isArray(items)) {
       for (const item of items) {
@@ -1879,12 +1933,12 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
       }
     }
 
-    if (finalPaid > 0) {
+    if (effectivePaid > 0) {
       const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
       const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = $1', [pType]);
+      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
       const method = ptNameRes.rows[0]?.name || 'Transfer Bank';
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar ${poId}`, finalPaid, method, poId, pType, userId]);
+      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar ${poId}`, effectivePaid, method, poId, pType, userId]);
     }
 
     await client.query('COMMIT');
@@ -1904,7 +1958,6 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
   const pType = payment_type_id || 'PT-1';
   const finalPaid = parseFloat(paid || paid_amount || 0);
   const finalTotal = parseFloat(total || 0);
-  const status = finalPaid >= finalTotal ? 'Selesai' : 'Dalam Proses';
   const poDate = date || new Date().toISOString().split('T')[0];
 
   console.log(`[PO Edit API] Request received for PO: ${poId}`);
@@ -1913,6 +1966,12 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Determine status by payment type
+    const instant = await isInstantPayment(pType);
+    const effectivePaid = instant ? finalTotal : finalPaid;
+    const status = instant ? 'Selesai'
+      : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
 
     const oldItemsRes = await client.query('SELECT product_id, quantity FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
     for (const item of oldItemsRes.rows) {
@@ -1933,16 +1992,16 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
       }
     }
 
-    await client.query('UPDATE purchase_orders SET date = $1, vendor_id = $2, total = $3, paid_amount = $4, status = $5, payment_type_id = $6, due_date = $7 WHERE id = $8', [poDate, vId, finalTotal, finalPaid, status, pType, due_date, poId]);
+    await client.query('UPDATE purchase_orders SET date = ?, vendor_id = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ? WHERE id = ?', [poDate, vId, finalTotal, effectivePaid, status, pType, due_date, poId]);
 
-    await client.query('DELETE FROM cash_transactions WHERE purchase_order_id = $1', [poId]);
-    if (finalPaid > 0) {
+    await client.query('DELETE FROM cash_transactions WHERE purchase_order_id = ?', [poId]);
+    if (effectivePaid > 0) {
       const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
       const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
       const userId = req.user.id;
-      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = $1', [pType]);
+      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
       const methodEdit = ptNameRes.rows[0]?.name || 'Transfer Bank';
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar PO ${poId} (Edit)`, finalPaid, methodEdit, poId, pType, userId]);
+      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar PO ${poId} (Edit)`, effectivePaid, methodEdit, poId, pType, userId]);
     }
 
     await client.query('COMMIT');
@@ -2375,6 +2434,26 @@ app.get('/api/reports/customer-fee', authenticateToken, authorizeRoles('admin'),
       ORDER BY total_fee DESC
     `, [start_date, end_date]);
 
+    // Breakdown per detail item
+    const resDetail = await client.query(`
+      SELECT
+        si.id AS invoice_id,
+        DATE(si.date) AS date,
+        COALESCE(c.name, 'Pelanggan Umum') AS customer_name,
+        COALESCE(p.name, '-') AS product_name,
+        ii.quantity,
+        ii.customer_fee,
+        ii.fee_notes
+      FROM invoice_items ii
+      JOIN sales_invoices si ON si.id = ii.invoice_id
+      LEFT JOIN customers c ON c.id = si.customer_id
+      LEFT JOIN products p ON p.id = ii.product_id
+      WHERE DATE(si.date) BETWEEN ? AND ?
+        AND si.status NOT IN ('Batal', 'Dibatalkan')
+        AND ii.customer_fee > 0
+      ORDER BY DATE(si.date) DESC, si.id DESC
+    `, [start_date, end_date]);
+
     const totalFee = resBulan.rows.reduce((s, r) => s + parseFloat(r.total_fee || 0), 0);
 
     res.json({
@@ -2392,6 +2471,15 @@ app.get('/api/reports/customer-fee', authenticateToken, authorizeRoles('admin'),
           produk: r.produk,
           total_fee: parseFloat(r.total_fee || 0),
           jumlah_item: parseInt(r.jumlah_item)
+        })),
+        detail: resDetail.rows.map(r => ({
+          invoice_id: r.invoice_id,
+          date: r.date ? String(r.date).split('T')[0] : '',
+          customer_name: r.customer_name,
+          product_name: r.product_name,
+          quantity: parseFloat(r.quantity || 0),
+          customer_fee: parseFloat(r.customer_fee || 0),
+          fee_notes: r.fee_notes || ''
         }))
       }
     });

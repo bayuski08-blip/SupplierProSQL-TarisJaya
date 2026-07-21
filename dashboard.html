@@ -7,6 +7,8 @@
     <title>Dashboard — SupplierPro</title>
     <meta name="description"
         content="Dashboard operasional SupplierPro – pantau omzet, stok, piutang, dan laporan keuangan UMKM Anda.">
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="favicon.png">
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2736,11 +2738,12 @@
                         <input type="date" id="manual-invoice-duedate" class="form-input">
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>Total Transaksi (Rp)</label>
-                    <input type="number" id="manual-invoice-total" class="form-input" placeholder="0">
-                </div>
-                <div class="form-group">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Total Transaksi (Rp)</label>
+                        <input type="number" id="manual-invoice-total" class="form-input" placeholder="0">
+                    </div>
+                    <div class="form-group">
                         <label>Tipe Pembayaran</label>
                         <select id="manual-invoice-payment-type" class="form-input">
                             <!-- Filled by JS -->

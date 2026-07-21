@@ -33,8 +33,11 @@ INSERT IGNORE INTO vendor_categories (id, name) VALUES
 
 INSERT IGNORE INTO payment_types (id, name) VALUES 
   ('PT-1', 'Tunai'), 
-  ('PT-2', 'Tempo'), 
-  ('PT-4', 'Transfer');
+  ('PT-4', 'Transfer'),
+  ('PT-5', 'Kredit 1 Hari'),
+  ('PT-6', 'Kredit 7 Hari'),
+  ('PT-7', 'Kredit 14 Hari'),
+  ('PT-8', 'Kredit 30 Hari');
 
 INSERT IGNORE INTO cash_categories (id, name, type, is_system) VALUES 
   (1, 'Penjualan', 'IN', 1),
