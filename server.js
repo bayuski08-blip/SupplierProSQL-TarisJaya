@@ -4,6 +4,7 @@ const mysql = require('mysql2/promise');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const fs = require('fs');
 
 const app = express();
 const port = 3000;
@@ -27,7 +28,7 @@ const mysqlPool = mysql.createPool({
   database: urlParsed.pathname.replace('/', '') || 'supplierpro',
   waitForConnections: true,
   connectionLimit: 10,
-  timezone: '+00:00'
+  timezone: '+08:00'  // WITA (UTC+8) — ensures DATE() functions align with Indonesian business time
 });
 
 /**
@@ -1112,7 +1113,7 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     console.log(`[Invoice Creation API] Saving invoice ${id} with payment_type_id: "${payment_type_id}"`);
     await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, due_date, status, userId]);
 
-    // Reduce stock
+    // Reduce stock & insert items with HPP snapshot
     if (items && Array.isArray(items)) {
       for (const item of items) {
         await client.query(updateStockQuery, [item.quantity, item.id]);
@@ -1120,9 +1121,14 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
         const itemFee = req.user.role === 'admin' ? (parseFloat(item.customer_fee) || 0) : 0;
         const itemFeeNotes = req.user.role === 'admin' ? (item.fee_notes || null) : null;
         if (itemFee < 0) throw new Error('customer_fee tidak boleh negatif');
+
+        // Snapshot the HPP (cost_price) at time of sale to prevent drift when cost changes later
+        const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [item.id]);
+        const costSnapshot = parseFloat(costRes.rows[0]?.cost_price || item.cost_price || 0);
+
         await client.query(
-          'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, customer_fee, fee_notes) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-          [Date.now().toString() + Math.floor(Math.random() * 1000), id, item.id, item.quantity, item.price || 0, itemFee, itemFeeNotes]
+          'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [Date.now().toString() + Math.floor(Math.random() * 1000), id, item.id, item.quantity, item.price || 0, costSnapshot, itemFee, itemFeeNotes]
         );
       }
     }
@@ -1229,8 +1235,15 @@ pool.query(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS status VARCHA
     await pool.query(`ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS customer_fee NUMERIC(15,2) NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS fee_notes VARCHAR(255)`);
     console.log('[Migration] invoice_items: customer_fee & fee_notes columns ensured');
+
+    await pool.query(`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS subtotal DECIMAL(20,4) DEFAULT 0`);
+    await pool.query(`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS discount DECIMAL(20,4) DEFAULT 0`);
+    await pool.query(`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS tax DECIMAL(20,4) DEFAULT 0`);
+    await pool.query(`ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS cost_price_snapshot DECIMAL(20,4) DEFAULT 0`);
+    console.log('[Migration] purchase_orders: subtotal, discount, tax columns ensured');
+    console.log('[Migration] invoice_items: cost_price_snapshot column ensured');
   } catch (err) {
-    console.error('[Migration] Failed to add customer_fee/fee_notes to invoice_items:', err.message);
+    console.error('[Migration] Failed to execute migrations:', err.message);
   }
 })();
 
@@ -1413,12 +1426,15 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
 
     console.log(`[Laba Rugi] Pendapatan: kotor=${penjualanKotor} diskon=${diskon} bersih=${penjualanBersih}`);
 
-    // 2. HPP (Pembelian selesai dalam periode)
+    // 2. HPP (Cost of Goods Sold) — uses snapshot HPP per item at time of sale.
+    //    Falls back to current cost_price for older records without snapshot.
     const resHPP = await client.query(`
-      SELECT COALESCE(SUM(total), 0) AS hpp
-      FROM purchase_orders
-      WHERE DATE(date) BETWEEN ? AND ?
-        AND status = 'Selesai'
+      SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.cost_price_snapshot, 0), p.cost_price)), 0) AS hpp
+      FROM invoice_items ii
+      JOIN sales_invoices si ON si.id = ii.invoice_id
+      LEFT JOIN products p ON p.id = ii.product_id
+      WHERE DATE(si.date) BETWEEN ? AND ?
+        AND si.status NOT IN ('Batal', 'Dibatalkan')
     `, [start_date, end_date]);
     const hpp = parseFloat(resHPP.rows[0]?.hpp || 0);
     const labaKotor = penjualanBersih - hpp;
@@ -1681,14 +1697,14 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
     const rataHari = jumlahInvoice > 0 ? totalPenjualan / parseInt(days_in_month) : 0;
     const rataInvoice = jumlahInvoice > 0 ? totalPenjualan / jumlahInvoice : 0;
 
-    // 2. HPP for margin calculation
+    // 2. HPP for margin calculation — uses snapshot HPP per item
     const resHPP = await client.query(`
-      SELECT COALESCE(SUM(ii.quantity * p.cost_price), 0) AS total_hpp
+      SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.cost_price_snapshot, 0), p.cost_price)), 0) AS total_hpp
       FROM invoice_items ii
-      JOIN products p ON p.id = ii.product_id
+      LEFT JOIN products p ON p.id = ii.product_id
       JOIN sales_invoices si ON si.id = ii.invoice_id
       WHERE DATE(si.date) BETWEEN ? AND ?
-        AND si.status != 'Dibatalkan' AND si.status != 'Batal'
+        AND si.status NOT IN ('Batal', 'Dibatalkan')
     `, [start_date, end_date]);
     const totalHPP = parseFloat(resHPP.rows[0].total_hpp);
     const margin = totalPenjualan > 0
@@ -1899,11 +1915,9 @@ app.get('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang', '
 });
 
 app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
-  const { vendor_id, vendorId, date, total, paid, paid_amount, payment_type_id, due_date, items } = req.body;
+  const { vendor_id, vendorId, date, paid, paid_amount, payment_type_id, due_date, items, discount, diskon } = req.body;
   const vId = vendor_id || vendorId;
   const pType = payment_type_id || 'PT-1';
-  const finalPaid = parseFloat(paid || paid_amount || 0);
-  const finalTotal = parseFloat(total || 0);
   const poDate = date || new Date().toISOString().split('T')[0];
   const userId = req.user.id;
 
@@ -1911,15 +1925,35 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
   try {
     await client.query('BEGIN');
 
+    // 1. Recalculate subtotal, tax, and finalTotal from items
+    const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsMap = {};
+    settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
+    
+    const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
+    const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
+    
+    let subtotal = 0;
+    if (items && Array.isArray(items)) {
+      items.forEach(item => {
+        subtotal += (parseFloat(item.cost || item.cost_price || item.price || 0) * (parseFloat(item.quantity || item.qty || 0)));
+      });
+    }
+    const finalDiskon = parseFloat(discount || diskon || 0);
+    // PPN is calculated from DPP (Subtotal - Diskon)
+    const taxAmount = ppnEnabled ? Math.round((subtotal - finalDiskon) * (pajakDefault / 100)) : 0;
+    const finalTotal = subtotal - finalDiskon + taxAmount;
+
     // Determine if payment type is instant (Tunai/Transfer) or credit (Kredit X Hari)
     const instant = await isInstantPayment(pType);
+    const finalPaid = parseFloat(paid || paid_amount || 0);
     const effectivePaid = instant ? finalTotal : finalPaid;
     const status = instant ? 'Selesai'
       : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
 
     const prefix = await getSetting('prefix_purchase', 'PO/{YYYY}/{MM}/');
     const poId = await generateNextId(client, 'purchase_orders', prefix);
-    await client.query('INSERT INTO purchase_orders (id, date, vendor_id, total, paid_amount, payment_type_id, due_date, status, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [poId, poDate, vId, finalTotal, effectivePaid, pType, due_date, status, userId]);
+    await client.query('INSERT INTO purchase_orders (id, date, vendor_id, subtotal, discount, tax, total, paid_amount, payment_type_id, due_date, status, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [poId, poDate, vId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, pType, due_date, status, userId]);
 
     if (items && Array.isArray(items)) {
       for (const item of items) {
@@ -1953,11 +1987,9 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
 
 app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
   const poId = req.params.id;
-  const { vendor_id, vendorId, date, total, paid, paid_amount, payment_type_id, due_date, items } = req.body;
+  const { vendor_id, vendorId, date, paid, paid_amount, payment_type_id, due_date, items, discount, diskon } = req.body;
   const vId = vendor_id || vendorId;
   const pType = payment_type_id || 'PT-1';
-  const finalPaid = parseFloat(paid || paid_amount || 0);
-  const finalTotal = parseFloat(total || 0);
   const poDate = date || new Date().toISOString().split('T')[0];
 
   console.log(`[PO Edit API] Request received for PO: ${poId}`);
@@ -1967,8 +1999,28 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
   try {
     await client.query('BEGIN');
 
+    // 1. Recalculate subtotal, tax, and finalTotal from items
+    const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsMap = {};
+    settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
+    
+    const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
+    const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
+    
+    let subtotal = 0;
+    if (items && Array.isArray(items)) {
+      items.forEach(item => {
+        subtotal += (parseFloat(item.cost || item.cost_price || item.price || 0) * (parseFloat(item.quantity || item.qty || 0)));
+      });
+    }
+    const finalDiskon = parseFloat(discount || diskon || 0);
+    // PPN is calculated from DPP (Subtotal - Diskon)
+    const taxAmount = ppnEnabled ? Math.round((subtotal - finalDiskon) * (pajakDefault / 100)) : 0;
+    const finalTotal = subtotal - finalDiskon + taxAmount;
+
     // Determine status by payment type
     const instant = await isInstantPayment(pType);
+    const finalPaid = parseFloat(paid || paid_amount || 0);
     const effectivePaid = instant ? finalTotal : finalPaid;
     const status = instant ? 'Selesai'
       : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
@@ -1992,7 +2044,7 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
       }
     }
 
-    await client.query('UPDATE purchase_orders SET date = ?, vendor_id = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ? WHERE id = ?', [poDate, vId, finalTotal, effectivePaid, status, pType, due_date, poId]);
+    await client.query('UPDATE purchase_orders SET date = ?, vendor_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ? WHERE id = ?', [poDate, vId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, due_date, poId]);
 
     await client.query('DELETE FROM cash_transactions WHERE purchase_order_id = ?', [poId]);
     if (effectivePaid > 0) {
@@ -2051,24 +2103,48 @@ app.put('/api/purchases/:id/cancel', authenticateToken, authorizeRoles('admin', 
 // --- Sales Invoices Extra CRUD ---
 app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir'), async (req, res) => {
   const invId = req.params.id;
-  const { customer_id, customerId, date, total, paid, paid_amount, payment_type_id, due_date, items } = req.body;
+  const { customer_id, customerId, date, paid, paid_amount, payment_type_id, due_date, items, discount, diskon } = req.body;
   const custId = customer_id || customerId;
   const pType = payment_type_id || 'PT-1';
-  const finalPaid = parseFloat(paid || paid_amount || 0);
-  const finalTotal = parseFloat(total || 0);
-  const status = finalPaid >= finalTotal ? 'Lunas' : (finalPaid > 0 ? 'Sebagian' : 'Belum Bayar');
   const invDate = date || new Date().toISOString().split('T')[0];
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const oldItemsRes = await client.query('SELECT product_id, quantity FROM invoice_items WHERE invoice_id = $1', [invId]);
+    // 1. Recalculate subtotal, tax, and finalTotal from items
+    const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsMap = {};
+    settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
+    
+    const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
+    const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
+    
+    let subtotal = 0;
+    if (items && Array.isArray(items)) {
+      items.forEach(item => {
+        subtotal += (parseFloat(item.price || item.sell_price || 0) * (parseFloat(item.quantity || item.qty || 0)));
+      });
+    }
+    const finalDiskon = parseFloat(discount || diskon || 0);
+    // PPN is calculated from DPP (Subtotal - Diskon)
+    const taxAmount = ppnEnabled ? Math.round((subtotal - finalDiskon) * (pajakDefault / 100)) : 0;
+    const finalTotal = subtotal - finalDiskon + taxAmount;
+
+    // 2. Determine status based on payment type
+    const instant = await isInstantPayment(pType);
+    const finalPaid = parseFloat(paid || paid_amount || 0);
+    const effectivePaid = instant ? finalTotal : finalPaid;
+    const status = instant ? 'Lunas'
+      : (effectivePaid >= finalTotal ? 'Lunas'
+        : (effectivePaid > 0 ? 'Sebagian' : 'Belum Bayar'));
+
+    const oldItemsRes = await client.query('SELECT product_id, quantity FROM invoice_items WHERE invoice_id = ?', [invId]);
     for (const item of oldItemsRes.rows) {
-      await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [item.quantity, item.product_id]);
+      await client.query('UPDATE products SET stock = stock + ? WHERE id = ?', [item.quantity, item.product_id]);
     }
 
-    await client.query('DELETE FROM invoice_items WHERE invoice_id = $1', [invId]);
+    await client.query('DELETE FROM invoice_items WHERE invoice_id = ?', [invId]);
 
     if (items && Array.isArray(items)) {
       for (const item of items) {
@@ -2081,29 +2157,33 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
         const itemFeeNotes = req.user.role === 'admin' ? (item.fee_notes || null) : null;
         if (itemFee < 0) throw new Error('customer_fee tidak boleh negatif');
 
+        // Snapshot the HPP (cost_price) at time of edit to prevent drift
+        const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [prodId]);
+        const costSnapshot = parseFloat(costRes.rows[0]?.cost_price || item.cost_price || 0);
+
         await client.query(
-          'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, customer_fee, fee_notes) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-          [itemId, invId, prodId, qty, price, itemFee, itemFeeNotes]
+          'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [itemId, invId, prodId, qty, price, costSnapshot, itemFee, itemFeeNotes]
         );
-        await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [qty, prodId]);
+        await client.query('UPDATE products SET stock = stock - ? WHERE id = ?', [qty, prodId]);
       }
     }
 
     if (due_date !== undefined) {
-      await client.query('UPDATE sales_invoices SET date = $1, customer_id = $2, subtotal = $3, total = $4, paid_amount = $5, status = $6, payment_type_id = $7, due_date = $8 WHERE id = $9', [invDate, custId, finalTotal, finalTotal, finalPaid, status, pType, due_date, invId]);
+      await client.query('UPDATE sales_invoices SET date = ?, customer_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ? WHERE id = ?', [invDate, custId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, due_date, invId]);
     } else {
-      await client.query('UPDATE sales_invoices SET date = $1, customer_id = $2, subtotal = $3, total = $4, paid_amount = $5, status = $6, payment_type_id = $7 WHERE id = $8', [invDate, custId, finalTotal, finalTotal, finalPaid, status, pType, invId]);
+      await client.query('UPDATE sales_invoices SET date = ?, customer_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ? WHERE id = ?', [invDate, custId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, invId]);
     }
 
-    await client.query('DELETE FROM cash_transactions WHERE invoice_id = $1 AND invoice_id IS NOT NULL AND (status IS NULL OR status = \'active\')', [invId]);
-    if (finalPaid > 0) {
+    await client.query('DELETE FROM cash_transactions WHERE invoice_id = ? AND invoice_id IS NOT NULL AND (status IS NULL OR status = \'active\')', [invId]);
+    if (effectivePaid > 0) {
       const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
       const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = $1', [pType]);
+      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
       const methodEdit = ptNameRes.rows[0]?.name || 'Transfer Bank';
       const userId = req.user.id;
-      const cashCategory = finalPaid >= finalTotal ? 'Penjualan' : 'Pelunasan Piutang';
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', [ctId, invDate, 'IN', cashCategory, `Pembayaran INV ${invId} (Edit)`, finalPaid, methodEdit, invId, pType, userId]);
+      const cashCategory = status === 'Lunas' ? 'Penjualan' : 'Pelunasan Piutang';
+      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, invDate, 'IN', cashCategory, `Pembayaran INV ${invId} (Edit)`, effectivePaid, methodEdit, invId, pType, userId]);
     }
 
     await client.query('COMMIT');
@@ -2490,6 +2570,195 @@ app.get('/api/reports/customer-fee', authenticateToken, authorizeRoles('admin'),
     client.release();
   }
 });
+
+// --- API Endpoint: Get Last Reconciliation Status ---
+app.get('/api/finance/reconciliation-status', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+  try {
+    const dbRes = await pool.query(`SELECT value FROM settings WHERE \`key\` = 'reconciliation_last_status'`);
+    if (dbRes.rows.length === 0) {
+      return res.json({ success: true, status: { balanced: true, lastRun: null, issues: [] } });
+    }
+    const status = JSON.parse(dbRes.rows[0].value);
+    res.json({ success: true, status });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Daily Reconciliation Runner
+async function runDailyReconciliation() {
+  const logFile = path.join(__dirname, 'reconciliation.log');
+  const now = new Date();
+  
+  // Reconcile for current month and previous month
+  const targetMonths = [
+    { month: now.getMonth() + 1, year: now.getFullYear() }
+  ];
+  // Also add previous month
+  const prevDate = new Date();
+  prevDate.setMonth(now.getMonth() - 1);
+  targetMonths.push({ month: prevDate.getMonth() + 1, year: prevDate.getFullYear() });
+
+  let allBalanced = true;
+  let allIssues = [];
+  const logEntries = [];
+
+  logEntries.push(`\n==================================================`);
+  logEntries.push(`AUTOMATIC RECONCILIATION RUN: ${now.toISOString()}`);
+  logEntries.push(`==================================================`);
+
+  const client = await pool.connect();
+  try {
+    for (const target of targetMonths) {
+      const { month, year } = target;
+      const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+      
+      const lastDayResult = await client.query(`SELECT LAST_DAY(?) AS end_date`, [startDate]);
+      const rawEndDate = lastDayResult.rows[0]?.end_date;
+      let endDate = '';
+      if (rawEndDate instanceof Date) {
+        const y = rawEndDate.getFullYear();
+        const m = String(rawEndDate.getMonth() + 1).padStart(2, '0');
+        const d = String(rawEndDate.getDate()).padStart(2, '0');
+        endDate = `${y}-${m}-${d}`;
+      } else {
+        endDate = rawEndDate ? String(rawEndDate).split('T')[0] : '';
+      }
+
+      logEntries.push(`Reconciling Periode: ${startDate} -> ${endDate}`);
+
+      // 1. Laba Rugi
+      const resPend = await client.query(`
+        SELECT COALESCE(SUM(total), 0) AS kotor, COALESCE(SUM(COALESCE(discount, 0)), 0) AS diskon
+        FROM sales_invoices WHERE DATE(date) BETWEEN ? AND ? AND status NOT IN ('Batal', 'Dibatalkan')
+      `, [startDate, endDate]);
+      const penjualanKotor = parseFloat(resPend.rows[0]?.kotor || 0);
+      const diskon = parseFloat(resPend.rows[0]?.diskon || 0);
+      const penjualanBersih = penjualanKotor - diskon;
+
+      const resHpp = await client.query(`
+        SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.cost_price_snapshot, 0), p.cost_price)), 0) AS hpp
+        FROM invoice_items ii JOIN sales_invoices si ON si.id = ii.invoice_id LEFT JOIN products p ON p.id = ii.product_id
+        WHERE DATE(si.date) BETWEEN ? AND ? AND si.status NOT IN ('Batal', 'Dibatalkan')
+      `, [startDate, endDate]);
+      const hpp = parseFloat(resHpp.rows[0]?.hpp || 0);
+      const labaKotor = penjualanBersih - hpp;
+
+      // Beban
+      const resBeban = await client.query(`
+        SELECT COALESCE(SUM(ct.amount), 0) AS total
+        FROM cash_transactions ct WHERE ct.type = 'OUT' AND (ct.status IS NULL OR ct.status != 'cancelled')
+        AND ct.invoice_id IS NULL AND ct.purchase_order_id IS NULL AND ct.date BETWEEN ? AND ?
+        AND ct.category NOT IN (SELECT name FROM cash_categories WHERE is_system = 1 AND (type = 'OUT' OR type = 'BOTH'))
+      `, [startDate, endDate]);
+      const beban = parseFloat(resBeban.rows[0]?.total || 0);
+
+      // Pendapatan Lain
+      const resLain = await client.query(`
+        SELECT COALESCE(SUM(ct.amount), 0) AS total
+        FROM cash_transactions ct WHERE ct.type = 'IN' AND (ct.status IS NULL OR ct.status != 'cancelled')
+        AND ct.date BETWEEN ? AND ?
+        AND ct.category NOT IN (SELECT name FROM cash_categories WHERE is_system = 1 AND (type = 'IN' OR type = 'BOTH'))
+      `, [startDate, endDate]);
+      const pendapatanLain = parseFloat(resLain.rows[0]?.total || 0);
+      const labaBersih = labaKotor - beban + pendapatanLain;
+
+      // 2. Neraca
+      const resKas = await client.query(`
+        SELECT COALESCE(SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END), 0) AS masuk,
+               COALESCE(SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END), 0) AS keluar
+        FROM cash_transactions WHERE DATE(date) <= ? AND status = 'active'
+      `, [endDate]);
+      const kasBank = parseFloat(resKas.rows[0].masuk) - parseFloat(resKas.rows[0].keluar);
+
+      const resPiutang = await client.query(`
+        SELECT COALESCE(SUM(total - paid_amount), 0) AS piutang FROM sales_invoices
+        WHERE status NOT IN ('Lunas', 'Dibatalkan', 'Batal') AND DATE(date) <= ?
+      `, [endDate]);
+      const piutangUsaha = parseFloat(resPiutang.rows[0].piutang);
+
+      const resPersediaan = await client.query(`SELECT COALESCE(SUM(stock * cost_price), 0) AS persediaan FROM products`);
+      const persediaan = parseFloat(resPersediaan.rows[0].persediaan);
+      const totalAset = kasBank + piutangUsaha + persediaan;
+
+      const resHutang = await client.query(`
+        SELECT COALESCE(SUM(total - paid_amount), 0) AS hutang FROM purchase_orders
+        WHERE status NOT IN ('Selesai', 'Dibatalkan', 'Batal') AND DATE(date) <= ?
+      `, [endDate]);
+      const hutangUsaha = parseFloat(resHutang.rows[0].hutang);
+      
+      const resModal = await client.query(`SELECT value FROM settings WHERE \`key\` = 'modal_pemilik'`);
+      const modalPemilik = parseFloat(resModal.rows[0]?.value || 0);
+      const labaDitahan = totalAset - hutangUsaha - modalPemilik;
+      const totalPasiva = hutangUsaha + modalPemilik + labaDitahan;
+
+      const selisih = Math.abs(totalAset - totalPasiva);
+      const balanced = selisih < 1;
+
+      if (!balanced) {
+        allBalanced = false;
+        const msg = `[${startDate}] Selisih Neraca sebesar Rp ${selisih.toLocaleString('id-ID')}`;
+        allIssues.push(msg);
+        logEntries.push(`❌ ${msg}`);
+      } else {
+        logEntries.push(`✅ Neraca Balance (Laba Bersih: Rp ${labaBersih.toLocaleString('id-ID')})`);
+      }
+
+      // Check Integritas Data
+      const invLunasRes = await client.query(`
+        SELECT COUNT(*) AS count FROM sales_invoices WHERE status = 'Lunas' AND paid_amount < total - 1
+      `);
+      const invLunasCount = parseInt(invLunasRes.rows[0]?.count || 0);
+      if (invLunasCount > 0) {
+        allBalanced = false;
+        const msg = `[${startDate}] ${invLunasCount} invoice Lunas memiliki paid_amount < total`;
+        allIssues.push(msg);
+        logEntries.push(`❌ ${msg}`);
+      }
+
+      const stokNegatifRes = await client.query(`SELECT COUNT(*) AS count FROM products WHERE stock < 0`);
+      const stokNegatifCount = parseInt(stokNegatifRes.rows[0]?.count || 0);
+      if (stokNegatifCount > 0) {
+        allBalanced = false;
+        const msg = `[${startDate}] ${stokNegatifCount} produk memiliki stok negatif`;
+        allIssues.push(msg);
+        logEntries.push(`❌ ${msg}`);
+      }
+    }
+
+    // Write final status to settings
+    const finalStatus = {
+      balanced: allBalanced,
+      lastRun: now.toISOString(),
+      issues: allIssues
+    };
+    await client.query(`INSERT INTO settings (\`key\`, value) VALUES ('reconciliation_last_status', ?) ON DUPLICATE KEY UPDATE value = ?`, [JSON.stringify(finalStatus), JSON.stringify(finalStatus)]);
+    logEntries.push(`Result: ${allBalanced ? 'ALL BALANCED' : 'ISSUES DETECTED'}`);
+
+  } catch (err) {
+    logEntries.push(`ERROR DURING RECONCILIATION: ${err.message}`);
+    console.error('[Auto Reconcile] Error:', err);
+  } finally {
+    client.release();
+    fs.appendFileSync(logFile, logEntries.join('\n') + '\n');
+    console.log('[Auto Reconcile] Daily reconciliation finished.');
+  }
+}
+
+// Check every hour if the day has changed to trigger daily reconciliation
+let lastReconcileDay = new Date().getDate();
+setInterval(() => {
+  const currentDay = new Date().getDate();
+  if (currentDay !== lastReconcileDay) {
+    lastReconcileDay = currentDay;
+    runDailyReconciliation();
+  }
+}, 3600000); // Hourly check
+
+// Trigger on startup (delayed slightly to ensure tables are loaded/migrated)
+setTimeout(() => {
+  runDailyReconciliation();
+}, 10000);
 
 app.listen(port, () => {
   console.log(`SupplierPro API running at http://localhost:${port}`);

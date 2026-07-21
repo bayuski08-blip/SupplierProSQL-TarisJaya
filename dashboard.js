@@ -359,7 +359,30 @@ function setupChartListeners() {
     });
 }
 
+async function checkReconciliationStatus() {
+    try {
+        const res = await fetch('/api/finance/reconciliation-status', { headers: getAuthHeaders() });
+        if (res.ok) {
+            const data = await res.json();
+            const alertEl = document.getElementById('reconciliation-alert');
+            const alertText = document.getElementById('reconciliation-alert-text');
+            if (data.success && data.status && !data.status.balanced) {
+                alertText.innerHTML = `Ditemukan ketidaksesuaian data keuangan pada pencatatan otomatis harian. Masalah:<br/>` + 
+                    data.status.issues.map(issue => `• ${issue}`).join('<br/>') +
+                    `<br/><span style="font-weight: 600; margin-top: 0.5rem; display: inline-block;">Silakan periksa laporan keuangan dan log transaksi cash flow.</span>`;
+                alertEl.style.display = 'block';
+                if (window.lucide) window.lucide.createIcons();
+            } else {
+                alertEl.style.display = 'none';
+            }
+        }
+    } catch (err) {
+        console.error('Failed to fetch reconciliation status', err);
+    }
+}
+
 function renderDashboard() {
+    checkReconciliationStatus();
     renderSummaryCards();
     renderSalesChart();
     renderDonutChart();

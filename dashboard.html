@@ -159,6 +159,15 @@
                  PAGE 1: DASHBOARD
                  ============================================================ -->
                 <section class="page-section active" id="page-dashboard">
+                    <!-- Reconciliation Status Alert -->
+                    <div id="reconciliation-alert" style="display: none; margin-bottom: 1.5rem; padding: 1.25rem; border-radius: 8px; background-color: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);">
+                        <div style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.05rem;">
+                            <i data-lucide="alert-triangle" style="color: #e11d48; width: 22px; height: 22px;"></i>
+                            <span>Peringatan Ketidaksesuaian Data Keuangan (Reconciliation Alert)</span>
+                        </div>
+                        <p style="margin: 0.5rem 0 0 1.75rem; font-size: 0.95rem; line-height: 1.5;" id="reconciliation-alert-text"></p>
+                    </div>
+
                     <!-- Summary Cards -->
                     <div class="summary-grid" id="summary-grid">
                         <!-- Filled by JS -->
