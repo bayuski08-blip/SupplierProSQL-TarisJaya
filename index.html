@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SupplierPro - Aplikasi Mini ERP untuk UMKM & Grosir</title>
+    <meta name="description" content="Aplikasi web mini ERP untuk UMKM supplier, distributor kecil, dan grosir di Indonesia. Pantau stok, piutang, dan laba dengan mudah.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar" id="navbar">
+        <div class="container nav-container">
+            <a href="#" class="logo">
+                <i data-lucide="boxes" class="logo-icon"></i>
+                SupplierPro
+            </a>
+            <ul class="nav-links">
+                <li><a href="#fitur">Fitur</a></li>
+                <li><a href="#solusi">Solusi</a></li>
+                <li><a href="#harga">Harga</a></li>
+            </ul>
+            <div class="nav-actions">
+                <a href="login.html" class="btn btn-primary">Coba Demo</a>
+            </div>
+            <button class="mobile-menu-btn" id="mobile-menu-btn">
+                <i data-lucide="menu"></i>
+            </button>
+        </div>
+        <!-- Mobile Nav Menu -->
+        <div class="mobile-nav" id="mobile-nav">
+            <ul class="mobile-nav-links">
+                <li><a href="#fitur">Fitur</a></li>
+                <li><a href="#solusi">Solusi</a></li>
+                <li><a href="#harga">Harga</a></li>
+                <li><a href="login.html" class="btn btn-primary w-full text-center mt-4">Coba Demo</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="hero">
+        <div class="container hero-container">
+            <div class="hero-content fade-in-up">
+                <div class="badge">🚀 Mini ERP Modern untuk UMKM Indonesia</div>
+                <h1>Tinggalkan Buku Catatan.<br><span>Otomatiskan</span> Bisnis Grosir Anda.</h1>
+                <p>SupplierPro adalah solusi lengkap pencatatan penjualan, stok, piutang, hingga laporan keuangan laba/rugi dalam satu dashboard modern dan mudah digunakan.</p>
+                <div class="hero-cta">
+                    <a href="login.html" class="btn btn-primary btn-lg">Coba Demo Gratis</a>
+                    <a href="#fitur" class="btn btn-outline btn-lg">Pelajari Fitur</a>
+                </div>
+                <div class="hero-stats">
+                    <div class="stat-item">
+                        <i data-lucide="check-circle-2" class="text-blue"></i>
+                        <span>Tanpa Kartu Kredit</span>
+                    </div>
+                    <div class="stat-item">
+                        <i data-lucide="check-circle-2" class="text-blue"></i>
+                        <span>Akses Instan</span>
+                    </div>
+                    <div class="stat-item">
+                        <i data-lucide="check-circle-2" class="text-blue"></i>
+                        <span>Data Dummy Realistis</span>
+                    </div>
+                </div>
+            </div>
+            <div class="hero-image-wrapper fade-in-up delay-1">
+                <div class="glass-effect"></div>
+                <img src="assets/dashboard_mockup.png" alt="SupplierPro Dashboard UI" class="hero-image">
+            </div>
+        </div>
+        <!-- Decorative blobs -->
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </header>
+
+    <!-- Problem & Solution Section -->
+    <section id="solusi" class="section bg-light">
+        <div class="container">
+            <div class="section-header text-center">
+                <h2>Mengapa Anda Membutuhkan <span class="text-blue">SupplierPro?</span></h2>
+                <p>Kami memahami tantangan distributor kecil dan supplier dalam operasional sehari-hari.</p>
+            </div>
+            
+            <div class="comparison-grid">
+                <!-- Bad Way -->
+                <div class="card card-danger">
+                    <div class="card-icon-wrapper danger-bg">
+                        <i data-lucide="x-circle"></i>
+                    </div>
+                    <h3>Cara Lama (Manual)</h3>
+                    <ul class="feature-list">
+                        <li><i data-lucide="x"></i> Pencatatan di buku/Excel rawan salah</li>
+                        <li><i data-lucide="x"></i> Lupa menagih piutang pelanggan</li>
+                        <li><i data-lucide="x"></i> Stok barang tidak sinkron</li>
+                        <li><i data-lucide="x"></i> Sulit mengetahui laba/rugi bulanan</li>
+                        <li><i data-lucide="x"></i> Invoice sering tercecer</li>
+                    </ul>
+                </div>
+
+                <!-- Good Way -->
+                <div class="card card-primary">
+                    <div class="card-icon-wrapper primary-bg">
+                        <i data-lucide="check-circle"></i>
+                    </div>
+                    <h3>Dengan SupplierPro</h3>
+                    <ul class="feature-list">
+                        <li><i data-lucide="check"></i> Kasir & invoice digital otomatis</li>
+                        <li><i data-lucide="check"></i> Notifikasi piutang jatuh tempo</li>
+                        <li><i data-lucide="check"></i> Stok update real-time saat transaksi</li>
+                        <li><i data-lucide="check"></i> Laporan laba/rugi, arus kas instan</li>
+                        <li><i data-lucide="check"></i> Arsip transaksi aman dan rapi</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="fitur" class="section">
+        <div class="container">
+            <div class="section-header text-center">
+                <h2>Fitur Lengkap untuk <span class="text-blue">Pertumbuhan Bisnis</span></h2>
+                <p>Semua yang Anda butuhkan untuk mengelola operasional dengan lebih profesional.</p>
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon"><i data-lucide="layout-dashboard"></i></div>
+                    <h3>Dashboard Pintar</h3>
+                    <p>Pantau omzet, piutang, stok menipis, dan laba kotor langsung dari satu layar ringkasan interaktif.</p>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon"><i data-lucide="shopping-cart"></i></div>
+                    <h3>Kasir / POS Khusus B2B</h3>
+                    <p>Buat order dengan mudah, atur diskon, dan pilih metode pembayaran (Tunai, Tempo, atau DP).</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon"><i data-lucide="package-search"></i></div>
+                    <h3>Manajemen Stok</h3>
+                    <p>Stok berkurang otomatis saat penjualan dan bertambah saat pembelian. Lengkap dengan notifikasi stok limit.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon"><i data-lucide="wallet"></i></div>
+                    <h3>Hutang & Piutang</h3>
+                    <p>Kelola tagihan pelanggan (reseller/warung) dan hutang ke vendor (pemasok) tanpa ada yang terlewat.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon"><i data-lucide="pie-chart"></i></div>
+                    <h3>Laporan Keuangan</h3>
+                    <p>Hasilkan laporan Laba/Rugi, Neraca sederhana, dan Arus Kas secara instan untuk evaluasi bisnis.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon"><i data-lucide="users"></i></div>
+                    <h3>CRM Sederhana</h3>
+                    <p>Simpan data pelanggan dan supplier, atur limit kredit piutang, dan pantau riwayat transaksi mereka.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA / Demo Section -->
+    <section id="demo" class="section cta-section">
+        <div class="container text-center">
+            <h2>Siap Mengubah Cara Anda Berbisnis?</h2>
+            <p>Jelajahi aplikasi SupplierPro sekarang. Kami telah menyediakan data dummy lengkap agar Anda bisa langsung mencoba simulasi transaksi, melihat laporan keuangan, dan mengelola stok.</p>
+            <div class="mt-8">
+                <a href="login.html" class="btn btn-primary btn-lg cta-pulse">Masuk ke Dashboard Demo</a>
+            </div>
+            <p class="mt-4 text-sm text-gray-400">*Tidak perlu registrasi, data disimpan secara lokal untuk keperluan demonstrasi.</p>
+        </div>
+        <!-- Decorative elements -->
+        <div class="cta-bg-shape"></div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container footer-container">
+            <div class="footer-col brand-col">
+                <a href="#" class="logo text-white">
+                    <i data-lucide="boxes" class="logo-icon"></i>
+                    SupplierPro
+                </a>
+                <p>Aplikasi web mini ERP terbaik untuk UMKM supplier, distributor kecil, dan grosir di seluruh Indonesia.</p>
+            </div>
+            <div class="footer-col">
+                <h4>Produk</h4>
+                <ul>
+                    <li><a href="#fitur">Fitur Utama</a></li>
+                    <li><a href="#harga">Harga</a></li>
+                    <li><a href="#solusi">Solusi Bisnis</a></li>
+                </ul>
+            </div>
+            <div class="footer-col">
+                <h4>Bantuan</h4>
+                <ul>
+                    <li><a href="#">Panduan Penggunaan</a></li>
+                    <li><a href="#">FAQ</a></li>
+                    <li><a href="#">Hubungi Kami</a></li>
+                </ul>
+            </div>
+        </div>
+        <div class="container footer-bottom">
+            <p>&copy; 2026 SupplierPro. Dibuat dengan 💙 untuk UMKM Indonesia.</p>
+        </div>
+    </footer>
+
+    <!-- Initialize Icons & Script -->
+    <script src="script.js"></script>
+</body>
+</html>
