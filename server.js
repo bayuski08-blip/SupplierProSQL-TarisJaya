@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const mysql = require('mysql2/promise');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
@@ -14,20 +14,94 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname)); // Serve static files from the current directory
 
-// Initialize Database Connection Pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:T34m1tb4l1@localhost:5432/supplierpro'
+// ─── MySQL Connection Pool (with pg-compatible wrapper) ───────────────────────
+// Parse mysql://user:pass@host:port/db  OR  use individual env vars
+const dbUrl = process.env.DATABASE_URL || 'mysql://root:@localhost:3306/supplierpro';
+const urlParsed = new URL(dbUrl);
+
+const mysqlPool = mysql.createPool({
+  host:     urlParsed.hostname || 'localhost',
+  port:     parseInt(urlParsed.port) || 3306,
+  user:     urlParsed.username || 'root',
+  password: urlParsed.password || '',
+  database: urlParsed.pathname.replace('/', '') || 'supplierpro',
+  waitForConnections: true,
+  connectionLimit: 10,
+  timezone: '+00:00'
 });
+
+/**
+ * Wraps a raw mysql2 connection/pool so it behaves like the pg library:
+ *   • Converts $1,$2,… placeholders → ?
+ *   • Strips RETURNING … clauses and exposes insertId in rows[0]
+ *   • Returns { rows, rowCount, affectedRows, insertId }
+ *   • Intercepts BEGIN / COMMIT / ROLLBACK to use MySQL syntax
+ */
+function pgify(conn) {
+  const execQuery = async (sql, params = []) => {
+    // Convert pg-style $N placeholders to MySQL ?
+    let mysqlSql = sql.replace(/\$\d+/g, '?');
+
+    // Handle RETURNING clause: strip it and remember we need insertId
+    const returningMatch = mysqlSql.match(/\s+RETURNING\s+[\w,\s*]+$/i);
+    if (returningMatch) {
+      mysqlSql = mysqlSql.slice(0, mysqlSql.length - returningMatch[0].length);
+    }
+
+    // Intercept transaction keywords
+    const trimmed = mysqlSql.trim().toUpperCase();
+    if (trimmed === 'BEGIN')    { await conn.query('START TRANSACTION'); return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'COMMIT')   { await conn.query('COMMIT');            return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'ROLLBACK') { await conn.query('ROLLBACK');          return { rows: [], rowCount: 0 }; }
+
+    const [result] = await conn.query(mysqlSql, params);
+
+    if (Array.isArray(result)) {
+      // SELECT
+      return { rows: result, rowCount: result.length };
+    } else {
+      // INSERT / UPDATE / DELETE
+      const insertId  = result.insertId  || 0;
+      const affected  = result.affectedRows || 0;
+      // If RETURNING was requested expose id so callers using result.rows[0].id still work
+      const rows = returningMatch ? [{ id: insertId || (params[0] ?? null) }] : [];
+      return { rows, rowCount: affected, affectedRows: affected, insertId };
+    }
+  };
+
+  return {
+    query:   execQuery,
+    release: () => (typeof conn.release === 'function' ? conn.release() : null),
+  };
+}
+
+// Top-level pool shim — mirrors pg's pool.query() and pool.connect()
+const pool = {
+  query: async (sql, params = []) => {
+    const conn = await mysqlPool.getConnection();
+    try {
+      return await pgify(conn).execQuery
+        ? pgify(conn).query(sql, params)
+        : pgify(conn).query(sql, params);
+    } finally {
+      conn.release();
+    }
+  },
+  connect: async () => {
+    const conn = await mysqlPool.getConnection();
+    return pgify(conn);
+  }
+};
 
 // Initialize settings table and seed defaults
 pool.query(`
   CREATE TABLE IF NOT EXISTS settings (
-    key VARCHAR(255) PRIMARY KEY,
+    \`key\` VARCHAR(255) PRIMARY KEY,
     value TEXT
-  );
+  )
 `).then(() => {
   pool.query(`
-    INSERT INTO settings (key, value) VALUES
+    INSERT IGNORE INTO settings (\`key\`, value) VALUES
     ('prefix_product', 'P'),
     ('prefix_customer', 'C'),
     ('prefix_vendor', 'V'),
@@ -42,70 +116,54 @@ pool.query(`
     ('company_logo', ''),
     ('ppn_enabled', 'true'),
     ('pajak_default', '11')
-    ON CONFLICT (key) DO NOTHING;
   `);
 }).catch(err => console.error('Error initializing settings table on startup:', err));
 
-// Fix: Reset users_id_seq to max(id) so new inserts don't collide with seeded rows
-pool.query(`
-  SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1));
-`).then(() => {
-  console.log('[Startup] users_id_seq reset to MAX(id)');
-}).catch(err => console.error('[Startup] Failed to reset users_id_seq:', err));
+// MySQL auto-manages AUTO_INCREMENT — no sequence reset needed
 
-// Seed/upgrade cash_categories to the canonical defaults
+// Seed/upgrade cash_categories to the canonical defaults (MySQL-compatible)
 (async () => {
-  try {
-    // Ensure UNIQUE constraint on cash_categories.name exists (migration-safe)
-    await pool.query(`
-      DO $$ BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'cash_categories_name_key' AND conrelid = 'cash_categories'::regclass
-        ) THEN
-          ALTER TABLE cash_categories ADD CONSTRAINT cash_categories_name_key UNIQUE (name);
-        END IF;
-      END $$;
-    `);
-  } catch (err) {
-    console.error('[Startup] Could not add unique constraint to cash_categories.name:', err);
-  }
-
+  // MySQL: UNIQUE constraint already defined in schema — no pg_constraint check needed
   const defaults = [
-    { name: 'Penjualan',              type: 'IN',   is_system: true  },
-    { name: 'Pelunasan Piutang',      type: 'IN',   is_system: true  },
-    { name: 'Pembelian Stok',         type: 'OUT',  is_system: true  },
-    { name: 'Penyesuaian Stok',       type: 'OUT',  is_system: true  },
-    { name: 'Pelunasan Hutang',       type: 'OUT',  is_system: true  },
-    { name: 'Gaji & Tunjangan',       type: 'OUT',  is_system: false },
-    { name: 'Sewa',                   type: 'OUT',  is_system: false },
-    { name: 'Operasional',            type: 'OUT',  is_system: false },
-    { name: 'Marketing',              type: 'OUT',  is_system: false },
-    { name: 'Pajak',                  type: 'OUT',  is_system: false },
-    { name: 'Pembelian Aset',         type: 'OUT',  is_system: false },
-    { name: 'Prive Pemilik',          type: 'OUT',  is_system: false },
-    { name: 'Pengeluaran Lainnya',    type: 'OUT',  is_system: false },
-    { name: 'Pendapatan Lainnya',     type: 'IN',   is_system: false },
-    { name: 'Pinjaman Masuk',         type: 'IN',   is_system: false },
-    { name: 'Setoran Modal',          type: 'IN',   is_system: false },
-    { name: 'Transfer Antar Kas/Bank',type: 'BOTH', is_system: false },
+    { name: 'Penjualan',              type: 'IN',   is_system: 1 },
+    { name: 'Pelunasan Piutang',      type: 'IN',   is_system: 1 },
+    { name: 'Pembelian Stok',         type: 'OUT',  is_system: 1 },
+    { name: 'Penyesuaian Stok',       type: 'OUT',  is_system: 1 },
+    { name: 'Pelunasan Hutang',       type: 'OUT',  is_system: 1 },
+    { name: 'Gaji & Tunjangan',       type: 'OUT',  is_system: 0 },
+    { name: 'Sewa',                   type: 'OUT',  is_system: 0 },
+    { name: 'Operasional',            type: 'OUT',  is_system: 0 },
+    { name: 'Marketing',              type: 'OUT',  is_system: 0 },
+    { name: 'Pajak',                  type: 'OUT',  is_system: 0 },
+    { name: 'Pembelian Aset',         type: 'OUT',  is_system: 0 },
+    { name: 'Prive Pemilik',          type: 'OUT',  is_system: 0 },
+    { name: 'Pengeluaran Lainnya',    type: 'OUT',  is_system: 0 },
+    { name: 'Pendapatan Lainnya',     type: 'IN',   is_system: 0 },
+    { name: 'Pinjaman Masuk',         type: 'IN',   is_system: 0 },
+    { name: 'Setoran Modal',          type: 'IN',   is_system: 0 },
+    { name: 'Transfer Antar Kas/Bank',type: 'BOTH', is_system: 0 },
   ];
   try {
     for (const item of defaults) {
       await pool.query(
         `INSERT INTO cash_categories (name, type, is_system)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (name) DO UPDATE SET type = EXCLUDED.type, is_system = EXCLUDED.is_system`,
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE type = VALUES(type), is_system = VALUES(is_system)`,
         [item.name, item.type, item.is_system]
       );
     }
-    // Remove stale legacy categories (no longer in default list and not user-created ones that are in use)
+    // Remove stale legacy categories
     await pool.query(`
       DELETE FROM cash_categories
-      WHERE name IN ('Gaji','Lainnya') AND is_system = false
-        AND id NOT IN (SELECT DISTINCT id FROM cash_categories WHERE name NOT IN (
-          SELECT DISTINCT category FROM cash_transactions WHERE category IS NOT NULL
-        ))
+      WHERE name IN ('Gaji','Lainnya') AND is_system = 0
+        AND id NOT IN (
+          SELECT id FROM (
+            SELECT DISTINCT cc.id FROM cash_categories cc
+            WHERE cc.name NOT IN (
+              SELECT DISTINCT ct.category FROM cash_transactions ct WHERE ct.category IS NOT NULL
+            )
+          ) sub
+        )
     `).catch(() => {}); // non-fatal
     console.log('[Startup] cash_categories seeded/upgraded successfully.');
   } catch (err) {
@@ -335,20 +393,22 @@ app.post('/api/master/:type', authenticateToken, authorizeRoles('admin'), async 
   const { id, name, type, is_system } = req.body;
   if (!name) return res.status(400).json({ error: 'Nama wajib diisi' });
   try {
-    let result;
+    let newId;
     if (tableName === 'cash_categories') {
-      // SERIAL primary key — let DB auto-assign; include type and is_system
-      result = await pool.query(
-        `INSERT INTO cash_categories (name, type, is_system) VALUES ($1, $2, $3) RETURNING id`,
-        [name, type || 'BOTH', is_system || false]
+      // AUTO_INCREMENT PK — let DB assign
+      const result = await pool.query(
+        `INSERT INTO cash_categories (name, type, is_system) VALUES (?, ?, ?)`,
+        [name, type || 'BOTH', is_system ? 1 : 0]
       );
+      newId = result.insertId;
     } else {
-      result = await pool.query(
-        `INSERT INTO ${tableName} (id, name) VALUES ($1, $2) RETURNING id`,
-        [id || req.params.type.toUpperCase().slice(0, 2) + '-' + Date.now(), name]
+      newId = id || req.params.type.toUpperCase().slice(0, 2) + '-' + Date.now();
+      await pool.query(
+        `INSERT INTO ${tableName} (id, name) VALUES (?, ?)`,
+        [newId, name]
       );
     }
-    res.json({ success: true, id: result.rows[0]?.id });
+    res.json({ success: true, id: newId });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -363,13 +423,13 @@ app.put('/api/master/:type/:id', authenticateToken, authorizeRoles('admin'), asy
     let result;
     if (tableName === 'cash_categories') {
       result = await pool.query(
-        `UPDATE cash_categories SET name=$1, type=$2, is_system=$3 WHERE id=$4`,
-        [name, type || 'BOTH', is_system ?? false, parseInt(req.params.id)]
+        `UPDATE cash_categories SET name=?, type=?, is_system=? WHERE id=?`,
+        [name, type || 'BOTH', is_system ? 1 : 0, parseInt(req.params.id)]
       );
     } else {
-      result = await pool.query(`UPDATE ${tableName} SET name=$1 WHERE id=$2`, [name, req.params.id]);
+      result = await pool.query(`UPDATE ${tableName} SET name=? WHERE id=?`, [name, req.params.id]);
     }
-    if (result.rowCount === 0) return res.status(404).json({ error: 'Data tidak ditemukan' });
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Data tidak ditemukan' });
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -382,15 +442,15 @@ app.delete('/api/master/:type/:id', authenticateToken, authorizeRoles('admin'), 
   try {
     // Prevent deleting system categories
     if (tableName === 'cash_categories') {
-      const check = await pool.query('SELECT is_system FROM cash_categories WHERE id=$1', [parseInt(req.params.id)]);
+      const check = await pool.query('SELECT is_system FROM cash_categories WHERE id=?', [parseInt(req.params.id)]);
       if (check.rows[0]?.is_system) return res.status(403).json({ error: 'Kategori sistem tidak dapat dihapus.' });
     }
     const idVal = tableName === 'cash_categories' ? parseInt(req.params.id) : req.params.id;
-    const result = await pool.query(`DELETE FROM ${tableName} WHERE id=$1`, [idVal]);
-    if (result.rowCount === 0) return res.status(404).json({ error: 'Data tidak ditemukan' });
+    const result = await pool.query(`DELETE FROM ${tableName} WHERE id=?`, [idVal]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Data tidak ditemukan' });
     res.json({ success: true });
   } catch (err) {
-    if (err.code === '23503') {
+    if (err.code === 'ER_ROW_IS_REFERENCED_2') {
       res.status(409).json({ error: 'Data masih digunakan dan tidak dapat dihapus.' });
     } else {
       res.status(400).json({ error: err.message });
@@ -419,7 +479,7 @@ app.post('/api/settings', authenticateToken, authorizeRoles('admin'), async (req
     await client.query('BEGIN');
     for (const [key, value] of Object.entries(settings)) {
       await client.query(
-        'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2',
+        'INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
         [key, String(value)]
       );
     }
@@ -465,7 +525,7 @@ app.get('/api/dashboard/summary', authenticateToken, async (req, res) => {
 
     // Order hari ini
     const today = new Date().toISOString().split('T')[0];
-    const ordersTodayResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE date::date = $1 AND status != 'Batal'", [today]);
+    const ordersTodayResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE DATE(date) = ? AND status != 'Batal'", [today]);
     const ordersToday = parseInt(ordersTodayResult.rows[0].count || 0);
 
     // Jumlah pelanggan aktif
@@ -502,14 +562,14 @@ app.get('/api/dashboard/sales-trend', authenticateToken, async (req, res) => {
   try {
     const query = `
       SELECT 
-        DATE(date::DATE) AS tanggal,
+        DATE(date) AS tanggal,
         COALESCE(SUM(total), 0) AS total_penjualan,
         COUNT(*) AS jumlah_transaksi
       FROM sales_invoices
-      WHERE date::DATE >= CURRENT_DATE - INTERVAL '1 day' * ($1 - 1)
+      WHERE DATE(date) >= DATE_SUB(CURDATE(), INTERVAL ? - 1 DAY)
         AND status != 'Dibatalkan' AND status != 'Batal'
-      GROUP BY DATE(date::DATE)
-      ORDER BY DATE(date::DATE) ASC
+      GROUP BY DATE(date)
+      ORDER BY DATE(date) ASC
     `;
     const result = await pool.query(query, [days]);
 
@@ -561,28 +621,26 @@ app.get('/api/dashboard/sales-trend', authenticateToken, async (req, res) => {
 app.get('/api/dashboard/sales-composition', authenticateToken, async (req, res) => {
   const days = parseInt(req.query.days) || 30;
   try {
-    const query = `
+    // MySQL: compute total first, then calculate percentages
+    const rawQuery = `
       SELECT 
         pc.name AS kategori,
-        COALESCE(SUM(ii.quantity * ii.price), 0) AS total_nilai,
-        ROUND(
-          COALESCE(SUM(ii.quantity * ii.price), 0) * 100.0 / 
-          NULLIF(SUM(SUM(ii.quantity * ii.price)) OVER (), 0)
-        , 1) AS persentase
+        COALESCE(SUM(ii.quantity * ii.price), 0) AS total_nilai
       FROM invoice_items ii
       JOIN products p ON p.id = ii.product_id
       JOIN product_categories pc ON pc.id = p.category_id
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE si.date::DATE >= CURRENT_DATE - INTERVAL '1 day' * ($1 - 1)
+      WHERE DATE(si.date) >= DATE_SUB(CURDATE(), INTERVAL ? - 1 DAY)
         AND si.status != 'Dibatalkan' AND si.status != 'Batal'
       GROUP BY pc.name
       ORDER BY total_nilai DESC
     `;
-    const result = await pool.query(query, [days]);
+    const result = await pool.query(rawQuery, [days]);
+    const grandTotal = result.rows.reduce((s, r) => s + parseFloat(r.total_nilai || 0), 0);
     const finalData = result.rows.map(row => ({
       kategori: row.kategori,
       total_nilai: parseFloat(row.total_nilai) || 0,
-      persentase: parseFloat(row.persentase) || 0
+      persentase: grandTotal > 0 ? Math.round((parseFloat(row.total_nilai || 0) / grandTotal) * 1000) / 10 : 0
     }));
     res.json(finalData);
   } catch (err) {
@@ -700,14 +758,14 @@ app.post('/api/stock-adjust', authenticateToken, authorizeRoles('admin', 'gudang
 });
 
 // --- Customers Routes ---
-// Reusable calculated-fields query fragment
+// Reusable calculated-fields query fragment (MySQL-compatible)
 const CUSTOMER_SELECT_SQL = `
   SELECT
     c.*,
     cc.name AS category_name,
-    COALESCE(SUM(si.total) FILTER (WHERE si.status != 'Batal'), 0)                             AS total_belanja,
-    COALESCE(SUM(si.total - si.paid_amount) FILTER (WHERE si.status NOT IN ('Lunas','Batal')), 0) AS total_piutang_berjalan,
-    c.credit_lmt - COALESCE(SUM(si.total - si.paid_amount) FILTER (WHERE si.status NOT IN ('Lunas','Batal')), 0) AS sisa_limit_piutang
+    COALESCE(SUM(CASE WHEN si.status != 'Batal' THEN si.total ELSE 0 END), 0) AS total_belanja,
+    COALESCE(SUM(CASE WHEN si.status NOT IN ('Lunas','Batal') THEN si.total - si.paid_amount ELSE 0 END), 0) AS total_piutang_berjalan,
+    c.credit_lmt - COALESCE(SUM(CASE WHEN si.status NOT IN ('Lunas','Batal') THEN si.total - si.paid_amount ELSE 0 END), 0) AS sisa_limit_piutang
   FROM customers c
   LEFT JOIN customer_categories cc ON c.customer_category_id = cc.id
   LEFT JOIN sales_invoices si ON si.customer_id = c.id
@@ -728,11 +786,11 @@ app.get('/api/customers/search', authenticateToken, authorizeRoles('admin', 'kas
   try {
     const result = await pool.query(
       CUSTOMER_SELECT_SQL +
-      ` WHERE (c.name ILIKE $1 OR c.phone ILIKE $1 OR c.id ILIKE $1)
+      ` WHERE (c.name LIKE ? OR c.phone LIKE ? OR c.id LIKE ?)
         GROUP BY c.id, cc.name
         ORDER BY c.name ASC
         LIMIT 20`,
-      [pattern]
+      [pattern, pattern, pattern]
     );
     res.json(result.rows);
   } catch (err) {
@@ -1280,12 +1338,12 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
 
   const client = await pool.connect();
   try {
-    // Compute start_date and end_date — same approach as /neraca and /performa
+    // Compute start_date and end_date using MySQL date functions
     const dateRes = await client.query(`
       SELECT
-        MAKE_DATE($1::int, $2::int, 1) AS start_date,
-        (DATE_TRUNC('month', MAKE_DATE($1::int, $2::int, 1)) + INTERVAL '1 month' - INTERVAL '1 day')::DATE AS end_date
-    `, [tahun, bulan]);
+        STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d') AS start_date,
+        LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d')) AS end_date
+    `, [tahun, bulan, tahun, bulan]);
     const { start_date, end_date } = dateRes.rows[0];
 
     console.log(`[Laba Rugi] Date range resolved: ${start_date} → ${end_date}`);
@@ -1297,7 +1355,7 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
         COALESCE(SUM(total), 0) AS kotor,
         COALESCE(SUM(COALESCE(discount, 0)), 0) AS diskon
       FROM sales_invoices
-      WHERE date::TIMESTAMPTZ::DATE BETWEEN $1 AND $2
+      WHERE DATE(date) BETWEEN ? AND ?
         AND status NOT IN ('Batal', 'Dibatalkan')
     `, [start_date, end_date]);
 
@@ -1311,7 +1369,7 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
     const resHPP = await client.query(`
       SELECT COALESCE(SUM(total), 0) AS hpp
       FROM purchase_orders
-      WHERE date::TIMESTAMPTZ::DATE BETWEEN $1 AND $2
+      WHERE DATE(date) BETWEEN ? AND ?
         AND status = 'Selesai'
     `, [start_date, end_date]);
     const hpp = parseFloat(resHPP.rows[0]?.hpp || 0);
@@ -1328,9 +1386,9 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
         AND (ct.status IS NULL OR ct.status != 'cancelled')
         AND ct.invoice_id IS NULL
         AND ct.purchase_order_id IS NULL
-        AND ct.date BETWEEN $1 AND $2
+        AND ct.date BETWEEN ? AND ?
         AND ct.category NOT IN (
-          SELECT name FROM cash_categories WHERE is_system = true AND (type = 'OUT' OR type = 'BOTH')
+          SELECT name FROM cash_categories WHERE is_system = 1 AND (type = 'OUT' OR type = 'BOTH')
         )
       GROUP BY ct.category
     `, [start_date, end_date]);
@@ -1340,7 +1398,7 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
       SELECT COALESCE(SUM(ii.customer_fee), 0) AS total_fee
       FROM invoice_items ii
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE si.date::TIMESTAMPTZ::DATE BETWEEN $1 AND $2
+      WHERE DATE(si.date) BETWEEN ? AND ?
         AND si.status NOT IN ('Batal', 'Dibatalkan')
     `, [start_date, end_date]);
     const bebanFeeCustomer = parseFloat(resFee.rows[0]?.total_fee || 0);
@@ -1379,9 +1437,9 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
       FROM cash_transactions ct
       WHERE ct.type = 'IN'
         AND (ct.status IS NULL OR ct.status != 'cancelled')
-        AND ct.date BETWEEN $1 AND $2
+        AND ct.date BETWEEN ? AND ?
         AND ct.category NOT IN (
-          SELECT name FROM cash_categories WHERE is_system = true AND (type = 'IN' OR type = 'BOTH')
+          SELECT name FROM cash_categories WHERE is_system = 1 AND (type = 'IN' OR type = 'BOTH')
         )
     `, [start_date, end_date]);
     const pendapatanLain = parseFloat(resLain.rows[0]?.total || 0);
@@ -1441,7 +1499,7 @@ app.get('/api/laporan/neraca', authenticateToken, authorizeRoles('admin', 'finan
   try {
     // end_date = last day of selected month
     const endDateResult = await client.query(
-      `SELECT (DATE_TRUNC('month', MAKE_DATE($1::int, $2::int, 1)) + INTERVAL '1 month' - INTERVAL '1 day')::DATE AS end_date`,
+      `SELECT LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d')) AS end_date`,
       [tahun, bulan]
     );
     const endDate = endDateResult.rows[0].end_date;
@@ -1452,7 +1510,7 @@ app.get('/api/laporan/neraca', authenticateToken, authorizeRoles('admin', 'finan
         COALESCE(SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END), 0) AS masuk,
         COALESCE(SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END), 0) AS keluar
       FROM cash_transactions
-      WHERE date::DATE <= $1
+      WHERE DATE(date) <= ?
         AND status = 'active'
     `, [endDate]);
     const kasBank = parseFloat(resKas.rows[0].masuk) - parseFloat(resKas.rows[0].keluar);
@@ -1462,7 +1520,7 @@ app.get('/api/laporan/neraca', authenticateToken, authorizeRoles('admin', 'finan
       SELECT COALESCE(SUM(total - paid_amount), 0) AS piutang
       FROM sales_invoices
       WHERE status NOT IN ('Lunas', 'Dibatalkan', 'Batal')
-        AND date::DATE <= $1
+        AND DATE(date) <= ?
     `, [endDate]);
     const piutangUsaha = parseFloat(resPiutang.rows[0].piutang);
 
@@ -1480,7 +1538,7 @@ app.get('/api/laporan/neraca', authenticateToken, authorizeRoles('admin', 'finan
       SELECT COALESCE(SUM(total - paid_amount), 0) AS hutang
       FROM purchase_orders
       WHERE status NOT IN ('Selesai', 'Dibatalkan', 'Batal')
-        AND date::DATE <= $1
+        AND DATE(date) <= ?
     `, [endDate]);
     const hutangUsaha = parseFloat(resHutang.rows[0].hutang);
 
@@ -1489,7 +1547,7 @@ app.get('/api/laporan/neraca', authenticateToken, authorizeRoles('admin', 'finan
     const totalLiabilitas = hutangUsaha + hutangLain;
 
     // 6. Modal Pemilik: from settings
-    const resModal = await client.query(`SELECT value FROM settings WHERE key = 'modal_pemilik'`);
+    const resModal = await client.query(`SELECT value FROM settings WHERE \`key\` = 'modal_pemilik'`);
     const modalPemilik = parseFloat(resModal.rows[0]?.value || 0);
 
     // 7. Laba Ditahan = Total Aset - Total Liabilitas - Modal Pemilik
@@ -1554,10 +1612,10 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
     // Compute start_date and end_date
     const dateRes = await client.query(`
       SELECT
-        MAKE_DATE($1::int, $2::int, 1) AS start_date,
-        (DATE_TRUNC('month', MAKE_DATE($1::int, $2::int, 1)) + INTERVAL '1 month' - INTERVAL '1 day')::DATE AS end_date,
-        DATE_PART('day', (DATE_TRUNC('month', MAKE_DATE($1::int, $2::int, 1)) + INTERVAL '1 month' - INTERVAL '1 day')::DATE) AS days_in_month
-    `, [tahun, bulan]);
+        STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d') AS start_date,
+        LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d')) AS end_date,
+        DAY(LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d'))) AS days_in_month
+    `, [tahun, bulan, tahun, bulan, tahun, bulan]);
     const { start_date, end_date, days_in_month } = dateRes.rows[0];
 
     // 1. Total penjualan & jumlah invoice
@@ -1566,7 +1624,7 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
         COALESCE(SUM(total), 0) AS total_penjualan,
         COUNT(id) AS jumlah_invoice
       FROM sales_invoices
-      WHERE date::DATE BETWEEN $1 AND $2
+      WHERE DATE(date) BETWEEN ? AND ?
         AND status != 'Dibatalkan' AND status != 'Batal'
     `, [start_date, end_date]);
     const totalPenjualan = parseFloat(resSales.rows[0].total_penjualan);
@@ -1581,7 +1639,7 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
       FROM invoice_items ii
       JOIN products p ON p.id = ii.product_id
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE si.date::DATE BETWEEN $1 AND $2
+      WHERE DATE(si.date) BETWEEN ? AND ?
         AND si.status != 'Dibatalkan' AND si.status != 'Batal'
     `, [start_date, end_date]);
     const totalHPP = parseFloat(resHPP.rows[0].total_hpp);
@@ -1597,7 +1655,7 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
       FROM (
         SELECT customer_id, COUNT(id) AS cnt
         FROM sales_invoices
-        WHERE date::DATE BETWEEN $1 AND $2
+        WHERE DATE(date) BETWEEN ? AND ?
           AND status != 'Dibatalkan' AND status != 'Batal'
         GROUP BY customer_id
       ) sub
@@ -1612,7 +1670,7 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
       FROM invoice_items ii
       JOIN products p ON p.id = ii.product_id
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE si.date::DATE BETWEEN $1 AND $2
+      WHERE DATE(si.date) BETWEEN ? AND ?
         AND si.status != 'Dibatalkan' AND si.status != 'Batal'
       GROUP BY p.name
       ORDER BY total_nilai DESC
@@ -2268,10 +2326,9 @@ app.get('/login', (req, res) => {
     const hashedPassword = await bcrypt.hash(newAdminPassword, 10);
     
     await pool.query(`
-      INSERT INTO users (username, name, email, password_hash, role, active)
+      INSERT IGNORE INTO users (username, name, email, password_hash, role, active)
       VALUES ('superadmin', 'Super Administrator', 
-              'superadmin@supplierpro.id', $1, 'admin', true)
-      ON CONFLICT (username) DO NOTHING
+              'superadmin@supplierpro.id', ?, 'admin', 1)
     `, [hashedPassword]);
     console.log('[Seed] Superadmin user verification completed');
   } catch (err) {
@@ -2290,16 +2347,16 @@ app.get('/api/reports/customer-fee', authenticateToken, authorizeRoles('admin'),
     // Breakdown per bulan
     const resBulan = await client.query(`
       SELECT
-        TO_CHAR(DATE_TRUNC('month', si.date::TIMESTAMPTZ::DATE), 'YYYY-MM') AS periode,
+        DATE_FORMAT(DATE(si.date), '%Y-%m') AS periode,
         SUM(ii.customer_fee) AS total_fee,
         COUNT(DISTINCT si.id) AS jumlah_transaksi
       FROM invoice_items ii
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE si.date::TIMESTAMPTZ::DATE BETWEEN $1 AND $2
+      WHERE DATE(si.date) BETWEEN ? AND ?
         AND si.status NOT IN ('Batal', 'Dibatalkan')
         AND ii.customer_fee > 0
-      GROUP BY DATE_TRUNC('month', si.date::TIMESTAMPTZ::DATE)
-      ORDER BY DATE_TRUNC('month', si.date::TIMESTAMPTZ::DATE)
+      GROUP BY DATE_FORMAT(DATE(si.date), '%Y-%m')
+      ORDER BY DATE_FORMAT(DATE(si.date), '%Y-%m')
     `, [start_date, end_date]);
 
     // Breakdown per produk
@@ -2311,7 +2368,7 @@ app.get('/api/reports/customer-fee', authenticateToken, authorizeRoles('admin'),
       FROM invoice_items ii
       JOIN products p ON p.id = ii.product_id
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE si.date::TIMESTAMPTZ::DATE BETWEEN $1 AND $2
+      WHERE DATE(si.date) BETWEEN ? AND ?
         AND si.status NOT IN ('Batal', 'Dibatalkan')
         AND ii.customer_fee > 0
       GROUP BY p.name

@@ -1214,7 +1214,7 @@
                             <div class="dash-card-header">
                                 <span class="dash-card-title">📅 Breakdown per Bulan</span>
                             </div>
-                            <div class="dash-card-body" style="padding:0;">
+                            <div class="dash-card-body" style="padding:0; max-height:350px; overflow-y:auto; overflow-x:auto;">
                                 <table class="data-table" id="customerfee-table-bulan">
                                     <thead>
                                         <tr>
@@ -1235,7 +1235,7 @@
                             <div class="dash-card-header">
                                 <span class="dash-card-title">📦 Breakdown per Produk</span>
                             </div>
-                            <div class="dash-card-body" style="padding:0;">
+                            <div class="dash-card-body" style="padding:0; max-height:350px; overflow-y:auto; overflow-x:auto;">
                                 <table class="data-table" id="customerfee-table-produk">
                                     <thead>
                                         <tr>
@@ -1249,6 +1249,31 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Detail Table per Transaksi/Customer/Produk -->
+                    <div class="dash-card" style="margin-top:1.5rem;">
+                        <div class="dash-card-header">
+                            <span class="dash-card-title">📋 Rincian Detail Fee Customer per Pelanggan & Produk</span>
+                        </div>
+                        <div class="dash-card-body" style="padding:0; max-height:450px; overflow-y:auto; overflow-x:auto;">
+                            <table class="data-table" id="customerfee-table-detail">
+                                <thead>
+                                    <tr>
+                                        <th>Tanggal / Invoice</th>
+                                        <th>Pelanggan (Customer)</th>
+                                        <th>Produk</th>
+                                        <th style="text-align:center;">Qty</th>
+                                        <th style="text-align:right;">Fee / Qty (Rp)</th>
+                                        <th style="text-align:right;">Total Fee (Rp)</th>
+                                        <th>Catatan</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="customerfee-body-detail">
+                                    <tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400);">Pilih rentang tanggal lalu klik Tampilkan</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </section>
@@ -2715,17 +2740,11 @@
                     <label>Total Transaksi (Rp)</label>
                     <input type="number" id="manual-invoice-total" class="form-input" placeholder="0">
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
+                <div class="form-group">
                         <label>Tipe Pembayaran</label>
                         <select id="manual-invoice-payment-type" class="form-input">
                             <!-- Filled by JS -->
                         </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Metode Pembayaran (Jika ada)</label>
-                        <input type="text" id="manual-invoice-payment-method" class="form-input"
-                            placeholder="Transfer/Tunai/-">
                     </div>
                 </div>
             </div>

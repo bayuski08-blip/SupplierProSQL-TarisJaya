@@ -1,12 +1,11 @@
 /** @type { import("drizzle-kit").Config } */
 module.exports = {
-  dialect: "postgresql",
+  dialect: "mysql",
   dbCredentials: {
     host: "localhost",
-    port: 5432,
-    user: "postgres",
-    password: "T34m1tb4l1",
+    port: 3306,
+    user: "root",
+    password: "",
     database: "supplierpro",
-    ssl: false,
   },
 };

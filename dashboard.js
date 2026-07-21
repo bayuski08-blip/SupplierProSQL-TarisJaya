@@ -1680,8 +1680,8 @@ document.getElementById('btn-checkout')?.addEventListener('click', async () => {
 
     // Detect payment behaviour by name (not hardcoded PT-2 ID)
     const payTypeName = getPaymentTypeName(paymentTypeSelect).toLowerCase();
-    // Tempo/credit = deferred payment (paid=0 on creation)
-    const isTempo = payTypeName.includes('tempo') || payTypeName.includes('credit');
+    // Kredit/Tempo = deferred payment (paid=0 on creation); Transfer/Tunai = full paid
+    const isTempo = payTypeName.includes('tempo') || payTypeName.includes('credit') || payTypeName.includes('kredit');
     // Transfer = full immediate payment (same as Tunai for amount purposes)
     // Tunai = full immediate payment
 
@@ -1866,10 +1866,14 @@ function capitalize(str) {
 }
 
 function calculateDueDate(paymentTypeName, transactionDateStr) {
-    if (!paymentTypeName || !paymentTypeName.toLowerCase().includes('credit')) return '';
-    const match = paymentTypeName.match(/credit\s+(\d+)\s+hari/i);
-    if (match && match[1]) {
-        const days = parseInt(match[1], 10);
+    if (!paymentTypeName) return '';
+    const nameLower = paymentTypeName.toLowerCase();
+    // Match both: 'Kredit X Hari' (Indonesian) and 'Credit X Hari' (English)
+    const isCredit = nameLower.includes('kredit') || nameLower.includes('credit');
+    if (!isCredit) return '';
+    const match = paymentTypeName.match(/(kredit|credit)\s+(\d+)\s+hari/i);
+    if (match && match[2]) {
+        const days = parseInt(match[2], 10);
         const date = new Date(transactionDateStr);
         if (!isNaN(date.getTime())) {
             date.setDate(date.getDate() + days);
@@ -1894,7 +1898,8 @@ function onPurchasePaymentTypeChange(mode) {
     if (!typeSelect || !dueDateGroup) return;
 
     const typeName = getPaymentTypeName(typeSelect);
-    if (typeName.toLowerCase().includes('credit')) {
+    const typeNameLower = typeName.toLowerCase();
+    if (typeNameLower.includes('kredit') || typeNameLower.includes('credit')) {
         dueDateGroup.style.display = 'block';
         if (dateInput && dateInput.value) {
             dueDateInput.value = calculateDueDate(typeName, dateInput.value);
@@ -1987,6 +1992,8 @@ async function init() {
 
     // Dynamically populate year filters to ensure current year is always available
     const currentYear = new Date().getFullYear();
+    const currentMonth = new Date().getMonth() + 1; // 1-12
+
     ['filter-tahun', 'balance-filter-tahun', 'reports-filter-tahun'].forEach(id => {
         const select = document.getElementById(id);
         if (select) {
@@ -2000,29 +2007,20 @@ async function init() {
         }
     });
 
+    // Set default bulan/tahun ke SAAT INI untuk semua filter laporan
+    ['filter-bulan', 'balance-filter-bulan', 'reports-filter-bulan'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = currentMonth;
+    });
+    ['filter-tahun', 'balance-filter-tahun', 'reports-filter-tahun'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = currentYear;
+    });
+
     renderCashFlow();
     renderProfitLoss();
 
-    // Set default month/year for Neraca dropdowns
-    const balanceBulanSelect = document.getElementById('balance-filter-bulan');
-    const balanceTahunSelect = document.getElementById('balance-filter-tahun');
-    if (balanceBulanSelect && balanceTahunSelect) {
-        const today = new Date();
-        balanceBulanSelect.value = today.getMonth() + 1;
-        balanceTahunSelect.value = today.getFullYear();
-    }
-
     renderBalance();
-
-    // Set default month/year for Laporan Performa dropdowns
-    const reportsBulanSelect = document.getElementById('reports-filter-bulan');
-    const reportsTahunSelect = document.getElementById('reports-filter-tahun');
-    if (reportsBulanSelect && reportsTahunSelect) {
-        const today = new Date();
-        reportsBulanSelect.value = today.getMonth() + 1;
-        reportsTahunSelect.value = today.getFullYear();
-    }
-
     renderReports();
     renderPOSProducts();
     populateCustomerSelect();
@@ -2812,11 +2810,17 @@ async function savePurchase(isEdit) {
         dueDate = calculateDueDate(getPaymentTypeName(document.getElementById(`${prefix}-purchase-payment-type`)), document.getElementById(`${prefix}-purchase-date`)?.value);
     }
 
+    const payTypeName = getPaymentTypeName(document.getElementById(`${prefix}-purchase-payment-type`)).toLowerCase();
+    const isKredit = payTypeName.includes('kredit') || payTypeName.includes('credit');
+    const paidInput = parseFloat(document.getElementById(`${prefix}-purchase-paid`)?.value || 0);
+    // Jika bukan kredit (Tunai/Transfer), paid otomatis = total (Lunas)
+    const paid = isKredit ? paidInput : total;
+
     const payload = {
         vendor_id: document.getElementById(`${prefix}-purchase-vendor`)?.value || '',
         date: document.getElementById(`${prefix}-purchase-date`)?.value || '',
         total: total,
-        paid: parseFloat(document.getElementById(`${prefix}-purchase-paid`)?.value || 0),
+        paid: paid,
         payment_type_id: document.getElementById(`${prefix}-purchase-payment-type`)?.value || '',
         due_date: dueDate,
         items: itemsToSave
@@ -3933,7 +3937,7 @@ async function saveManualInvoice() {
         due_date: document.getElementById('manual-invoice-duedate').value,
         total: parseFloat(document.getElementById('manual-invoice-total').value) || 0,
         payment_type_id: document.getElementById('manual-invoice-payment-type').value,
-        payment_method: document.getElementById('manual-invoice-payment-method').value
+        payment_method: null
     };
 
     if (!payload.id || !payload.customer_id || !payload.total) {
@@ -3998,6 +4002,45 @@ window.onCashTypeChange = (prefix) => {
     catEl.innerHTML = filteredCats.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
 };
 
+function populateManualInvoiceCustomerSelect(filter = '') {
+    const dropdown = document.getElementById('manual-invoice-customer-dropdown');
+    if (!dropdown) return;
+
+    let filtered = CUSTOMERS;
+    if (filter) {
+        const q = filter.toLowerCase();
+        filtered = filtered.filter(c => c.name.toLowerCase().includes(q) || (c.city && c.city.toLowerCase().includes(q)));
+    }
+
+    if (filtered.length === 0) {
+        dropdown.innerHTML = '<div style="padding: 0.75rem; color: var(--gray-400); text-align: center; font-size: 0.875rem;">Customer tidak ditemukan</div>';
+        return;
+    }
+
+    dropdown.innerHTML = filtered.map(c => `
+        <div class="manual-invoice-customer-dropdown-item" data-id="${c.id}" data-name="${c.name}" style="padding: 0.5rem 0.75rem; cursor: pointer; border-bottom: 1px solid var(--gray-100); display: flex; flex-direction: column; transition: background-color 0.2s;">
+            <span style="font-weight: 500; font-size: 0.875rem;">${c.name} — ${c.city || ''}</span>
+        </div>
+    `).join('');
+
+    dropdown.querySelectorAll('.manual-invoice-customer-dropdown-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            const id = e.currentTarget.dataset.id;
+            const name = e.currentTarget.dataset.name;
+            document.getElementById('manual-invoice-customer-search').value = name;
+            document.getElementById('manual-invoice-customer').value = id;
+            dropdown.style.display = 'none';
+        });
+
+        item.addEventListener('mouseenter', () => {
+            item.style.backgroundColor = 'var(--gray-50)';
+        });
+        item.addEventListener('mouseleave', () => {
+            item.style.backgroundColor = 'transparent';
+        });
+    });
+}
+
 // Manual Invoice Customer Search bindings
 document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('manual-invoice-customer-search');
@@ -4005,79 +4048,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const dropdown = document.getElementById('manual-invoice-customer-dropdown');
 
     if (searchInput && hiddenInput && dropdown) {
-        let debounceTimer;
+        searchInput.addEventListener('focus', () => {
+            populateManualInvoiceCustomerSelect(searchInput.value);
+            dropdown.style.display = 'block';
+        });
 
         searchInput.addEventListener('input', (e) => {
-            const query = e.target.value;
-            hiddenInput.value = ''; // Reset the hidden value so we don't submit stale selection if they modified the input
-
-            clearTimeout(debounceTimer);
-            if (query.trim().length < 2) {
-                dropdown.style.display = 'none';
-                dropdown.innerHTML = '';
-                return;
-            }
-
-            debounceTimer = setTimeout(async () => {
-                try {
-                    const res = await fetch(`/api/customers/search?q=${encodeURIComponent(query)}`, {
-                        headers: getAuthHeaders()
-                    });
-                    if (!res.ok) {
-                        dropdown.innerHTML = '<div style="padding: 0.75rem; color: var(--rose-500); font-size: 0.875rem; text-align: center;">Gagal memuat data customer</div>';
-                        dropdown.style.display = 'block';
-                        return;
-                    }
-                    const data = await res.json();
-                    if (!Array.isArray(data) || data.length === 0) {
-                        dropdown.innerHTML = '<div style="padding: 0.75rem; color: var(--gray-400); font-size: 0.875rem; text-align: center;">Customer tidak ditemukan</div>';
-                        dropdown.style.display = 'block';
-                        return;
-                    }
-
-                    dropdown.innerHTML = data.map(c => `
-                        <div class="manual-invoice-customer-dropdown-item" data-id="${c.id}" data-name="${c.name}" style="padding: 0.5rem 0.75rem; cursor: pointer; border-bottom: 1px solid var(--gray-100); display: flex; flex-direction: column; transition: background-color 0.2s;">
-                            <span style="font-weight: 500; font-size: 0.875rem;">${c.name} — ${c.city || ''}</span>
-                        </div>
-                    `).join('');
-
-                    dropdown.style.display = 'block';
-
-                    dropdown.querySelectorAll('.manual-invoice-customer-dropdown-item').forEach(item => {
-                        item.addEventListener('click', (e) => {
-                            const id = e.currentTarget.dataset.id;
-                            const name = e.currentTarget.dataset.name;
-                            searchInput.value = name;
-                            hiddenInput.value = id;
-                            dropdown.style.display = 'none';
-                        });
-
-                        item.addEventListener('mouseenter', () => {
-                            item.style.backgroundColor = 'var(--gray-50)';
-                        });
-                        item.addEventListener('mouseleave', () => {
-                            item.style.backgroundColor = 'transparent';
-                        });
-                    });
-                } catch (err) {
-                    console.error('Error searching customers:', err);
-                    dropdown.innerHTML = '<div style="padding: 0.75rem; color: var(--rose-500); font-size: 0.875rem; text-align: center;">Gagal memuat data customer</div>';
-                    dropdown.style.display = 'block';
-                }
-            }, 300);
+            populateManualInvoiceCustomerSelect(e.target.value);
+            dropdown.style.display = 'block';
+            hiddenInput.value = ''; // Reset actual selection
         });
 
         // Close dropdown when clicking outside
         document.addEventListener('click', (e) => {
             if (!e.target.closest('#modal-manual-invoice .customer-search-wrapper')) {
                 dropdown.style.display = 'none';
-            }
-        });
-
-        // Prevent opening dropdown from closing when clicking inside
-        searchInput.addEventListener('focus', () => {
-            if (searchInput.value.trim().length >= 2 && dropdown.innerHTML !== '') {
-                dropdown.style.display = 'block';
             }
         });
     }
@@ -4894,6 +4879,32 @@ async function renderCustomerFeeReport() {
                         <td style="text-align:right;color:var(--gray-500);">${r.jumlah_item}</td>
                     </tr>
                 `).join('');
+            }
+        }
+
+        // --- Detail Table ---
+        const bodyDetail = document.getElementById('customerfee-body-detail');
+        if (bodyDetail) {
+            if (!d.detail || d.detail.length === 0) {
+                bodyDetail.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400);">Tidak ada transaksi fee pada periode ini</td></tr>';
+            } else {
+                bodyDetail.innerHTML = d.detail.map(r => {
+                    const feePerQty = r.quantity > 0 ? (r.customer_fee / r.quantity) : r.customer_fee;
+                    return `
+                        <tr>
+                            <td style="white-space:nowrap;">
+                                <div style="font-weight:600;color:var(--gray-800);">${r.invoice_id}</div>
+                                <div style="font-size:0.75rem;color:var(--gray-400);">${r.date}</div>
+                            </td>
+                            <td style="font-weight:600;color:var(--indigo-600);">${r.customer_name}</td>
+                            <td>${r.product_name}</td>
+                            <td style="text-align:center;font-weight:600;">${r.quantity}</td>
+                            <td style="text-align:right;color:var(--gray-600);">${rp(feePerQty)}</td>
+                            <td style="text-align:right;color:#92400e;font-weight:700;">${rp(r.customer_fee)}</td>
+                            <td style="font-size:0.8rem;color:var(--gray-500);">${r.fee_notes || '<span style="color:var(--gray-300);">-</span>'}</td>
+                        </tr>
+                    `;
+                }).join('');
             }
         }
 

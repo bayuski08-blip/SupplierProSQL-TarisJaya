@@ -1,16 +1,15 @@
 -- =============================================
--- Seed Data untuk SupplierPro (PRD2 Master Data Update)
+-- Seed Data untuk SupplierPro (MySQL)
 -- =============================================
 
 -- Master Data
-INSERT INTO product_categories (id, name) VALUES 
+INSERT IGNORE INTO product_categories (id, name) VALUES 
   ('PC-1', 'Minuman'), 
   ('PC-2', 'Makanan'), 
   ('PC-3', 'Sembako'), 
-  ('PC-4', 'Lainnya') 
-ON CONFLICT DO NOTHING;
+  ('PC-4', 'Lainnya');
 
-INSERT INTO product_units (id, name) VALUES 
+INSERT IGNORE INTO product_units (id, name) VALUES 
   ('PU-1', 'pcs'), 
   ('PU-2', 'box'), 
   ('PU-3', 'botol'), 
@@ -18,82 +17,71 @@ INSERT INTO product_units (id, name) VALUES
   ('PU-5', 'pack'), 
   ('PU-6', 'sak'), 
   ('PU-7', 'kg'), 
-  ('PU-8', 'karton') 
-ON CONFLICT DO NOTHING;
+  ('PU-8', 'karton');
 
-INSERT INTO customer_categories (id, name) VALUES 
+INSERT IGNORE INTO customer_categories (id, name) VALUES 
   ('CC-1', 'Reseller'), 
   ('CC-2', 'Warung'), 
   ('CC-3', 'Kafe'), 
-  ('CC-4', 'Toko') 
-ON CONFLICT DO NOTHING;
+  ('CC-4', 'Toko');
 
-INSERT INTO vendor_categories (id, name) VALUES 
+INSERT IGNORE INTO vendor_categories (id, name) VALUES 
   ('VC-1', 'Minuman'), 
   ('VC-2', 'Makanan'), 
   ('VC-3', 'Sembako'), 
-  ('VC-4', 'Non-Pangan') 
-ON CONFLICT DO NOTHING;
+  ('VC-4', 'Non-Pangan');
 
-INSERT INTO payment_types (id, name) VALUES 
+INSERT IGNORE INTO payment_types (id, name) VALUES 
   ('PT-1', 'Tunai'), 
   ('PT-2', 'Tempo'), 
-  ('PT-4', 'Transfer') 
-ON CONFLICT DO NOTHING;
+  ('PT-4', 'Transfer');
 
-INSERT INTO cash_categories (id, name, type, is_system) VALUES 
-  (1, 'Penjualan', 'IN', true),
-  (2, 'Pelunasan Piutang', 'IN', true),
-  (3, 'Pembelian Stok', 'OUT', true),
-  (4, 'Penyesuaian Stok', 'OUT', true),
-  (5, 'Pelunasan Hutang', 'OUT', true),
-  (6, 'Gaji & Tunjangan', 'OUT', false),
-  (7, 'Sewa', 'OUT', false),
-  (8, 'Operasional', 'OUT', false),
-  (9, 'Marketing', 'OUT', false),
-  (10, 'Pajak', 'OUT', false),
-  (11, 'Pembelian Aset', 'OUT', false),
-  (12, 'Prive Pemilik', 'OUT', false),
-  (13, 'Pengeluaran Lainnya', 'OUT', false),
-  (14, 'Pendapatan Lainnya', 'IN', false),
-  (15, 'Pinjaman Masuk', 'IN', false),
-  (16, 'Setoran Modal', 'IN', false),
-  (17, 'Transfer Antar Kas/Bank', 'BOTH', false)
-ON CONFLICT (id) DO NOTHING;
-SELECT setval('cash_categories_id_seq', (SELECT COALESCE(MAX(id), 1) FROM cash_categories));
+INSERT IGNORE INTO cash_categories (id, name, type, is_system) VALUES 
+  (1, 'Penjualan', 'IN', 1),
+  (2, 'Pelunasan Piutang', 'IN', 1),
+  (3, 'Pembelian Stok', 'OUT', 1),
+  (4, 'Penyesuaian Stok', 'OUT', 1),
+  (5, 'Pelunasan Hutang', 'OUT', 1),
+  (6, 'Gaji & Tunjangan', 'OUT', 0),
+  (7, 'Sewa', 'OUT', 0),
+  (8, 'Operasional', 'OUT', 0),
+  (9, 'Marketing', 'OUT', 0),
+  (10, 'Pajak', 'OUT', 0),
+  (11, 'Pembelian Aset', 'OUT', 0),
+  (12, 'Prive Pemilik', 'OUT', 0),
+  (13, 'Pengeluaran Lainnya', 'OUT', 0),
+  (14, 'Pendapatan Lainnya', 'IN', 0),
+  (15, 'Pinjaman Masuk', 'IN', 0),
+  (16, 'Setoran Modal', 'IN', 0),
+  (17, 'Transfer Antar Kas/Bank', 'BOTH', 0);
 
 -- Users
 -- Note: password_hash values below are plain text (auto-upgraded to bcrypt on first login)
 -- Passwords: admin=admin123, demo_finance=Finance123, demo_gudang=Gudang123, demo_kasir=Kasir123
-INSERT INTO users (id, username, name, email, password_hash, role, active) VALUES 
-  (1, 'admin', 'Administrator', 'admin@supplierpro.id', 'admin123', 'admin', true),
-  (2, 'bayu', 'bayu', 'bayu@gmail.com', 'bayu', 'admin', true),
-  (3, 'demo_finance', 'Demo Finance', 'finance@supplierpro.id', 'Finance123', 'finance', true),
-  (4, 'demo_gudang', 'Demo Gudang', 'gudang@supplierpro.id', 'Gudang123', 'gudang', true),
-  (5, 'demo_kasir', 'Demo Kasir', 'kasir@supplierpro.id', 'Kasir123', 'kasir', true)
-ON CONFLICT (id) DO NOTHING;
-SELECT setval('users_id_seq', (SELECT COALESCE(MAX(id), 1) FROM users));
+INSERT IGNORE INTO users (id, username, name, email, password_hash, role, active) VALUES 
+  (1, 'admin', 'Administrator', 'admin@supplierpro.id', 'admin123', 'admin', 1),
+  (2, 'bayu', 'bayu', 'bayu@gmail.com', 'bayu', 'admin', 1),
+  (3, 'demo_finance', 'Demo Finance', 'finance@supplierpro.id', 'Finance123', 'finance', 1),
+  (4, 'demo_gudang', 'Demo Gudang', 'gudang@supplierpro.id', 'Gudang123', 'gudang', 1),
+  (5, 'demo_kasir', 'Demo Kasir', 'kasir@supplierpro.id', 'Kasir123', 'kasir', 1);
 
 -- Products
-INSERT INTO products (id, sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id) VALUES 
+INSERT IGNORE INTO products (id, sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id) VALUES 
   ('P000001', 'MNM-001', 'Kopi Arabica 250g', 'PC-1', 45000, 68000, 118, 20, 'PU-5'),
-  ('P000002', 'MKN-001', 'Mie Instan Goreng (dus)', 'PC-2', 92000, 115000, 35, 10, 'PU-4')
-ON CONFLICT (id) DO NOTHING;
+  ('P000002', 'MKN-001', 'Mie Instan Goreng (dus)', 'PC-2', 92000, 115000, 35, 10, 'PU-4');
 
 -- Customers
-INSERT INTO customers (id, name, customer_category_id, phone, city, address, credit_lmt) VALUES 
+INSERT IGNORE INTO customers (id, name, customer_category_id, phone, city, address, credit_lmt) VALUES 
   ('C000001', 'Toko Berkah Jaya', 'CC-1', '089696469991', 'Kota Denpasar', 'Jl. Sunia Negara No. 33', 10000000),
-  ('C000002', 'Warung Sari Rasa', 'CC-2', '085936103383', 'denpasar', 'Jl. Sunia Negara No. 33, Pemogan', 2000000)
-ON CONFLICT (id) DO NOTHING;
+  ('C000002', 'Warung Sari Rasa', 'CC-2', '085936103383', 'denpasar', 'Jl. Sunia Negara No. 33, Pemogan', 2000000);
 
 -- Vendors
-INSERT INTO vendors (id, name, vendor_category_id, phone, city, address, id_number, nama_bank, nomor_rek, pemilik_rek) VALUES 
+INSERT IGNORE INTO vendors (id, name, vendor_category_id, phone, city, address, id_number, nama_bank, nomor_rek, pemilik_rek) VALUES 
   ('V000001', 'PT Sumber Minuman Nusantara', 'VC-1', '089696469991', 'Kota Denpasar', 'Jl. Sunia Negara No. 33', '3171011234567890', 'BCA', '1234567890', 'PT Sumber Minuman Nusantara'),
-  ('V000002', 'CV Pangan Makmur', 'VC-3', '03177789012', 'Gianyar', 'Jl. Cokroaminoto, Gg. Pucuk Sari 9', '3578022345678901', 'Mandiri', '0987654321', 'CV Pangan Makmur')
-ON CONFLICT (id) DO NOTHING;
+  ('V000002', 'CV Pangan Makmur', 'VC-3', '03177789012', 'Gianyar', 'Jl. Cokroaminoto, Gg. Pucuk Sari 9', '3578022345678901', 'Mandiri', '0987654321', 'CV Pangan Makmur');
 
 -- Sales Invoices
-INSERT INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, due_date, payment_type_id, payment_method, status, user_id) VALUES 
+INSERT IGNORE INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, due_date, payment_type_id, payment_method, status, user_id) VALUES 
   ('INV-2026-06-000001', '2026-06-12T03:04:20.117Z', 'C000001', 1040000, 0, 114400, 1154400, 1154400, '', 'PT-1', NULL, 'Lunas', NULL),
   ('INV-2026-06-000002', '2026-06-12T03:04:33.271Z', 'C000002', 366000, 0, 40260, 406260, 406260, '', 'PT-4', NULL, 'Lunas', NULL),
   ('INV-2026-06-000003', '2026-06-12T03:04:44.635Z', 'C000001', 1098000, 0, 120780, 1218780, 1218780, '', 'PT-2', NULL, 'Lunas', NULL),
@@ -109,11 +97,10 @@ INSERT INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, tota
   ('INV-2026-06-000013', '2026-06-12T08:19:06.130Z', 'C000001', 75000, 0, 0, 75000, 0, '2026-07-12', 'PT-2', NULL, 'Belum Bayar', 1),
   ('INV-2026-06-000014', '2026-06-12T08:24:46.805Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-1', NULL, 'Lunas', 1),
   ('INV-2026-06-000015', '2026-06-12T08:24:46.933Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-4', NULL, 'Lunas', 1),
-  ('INV-2026-06-000016', '2026-06-12T08:24:46.954Z', 'C000001', 50000, 0, 0, 50000, 0, '2026-07-30', 'PT-2', NULL, 'Belum Bayar', 1)
-ON CONFLICT (id) DO NOTHING;
+  ('INV-2026-06-000016', '2026-06-12T08:24:46.954Z', 'C000001', 50000, 0, 0, 50000, 0, '2026-07-30', 'PT-2', NULL, 'Belum Bayar', 1);
 
 -- Invoice Items
-INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price) VALUES 
+INSERT IGNORE INTO invoice_items (id, invoice_id, product_id, quantity, price) VALUES 
   ('1781233460234426', 'INV-2026-06-000001', 'P000002', 4, 200000),
   ('1781233460235666', 'INV-2026-06-000001', 'P000001', 3, 80000),
   ('1781233473403588', 'INV-2026-06-000002', 'P000001', 2, 68000),
@@ -136,11 +123,10 @@ INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price) VALUES
   ('1781252346142449', 'INV-2026-06-000013', 'P000002', 1, 75000),
   ('1781252686907370', 'INV-2026-06-000014', 'P000002', 1, 50000),
   ('1781252686938772', 'INV-2026-06-000015', 'P000002', 1, 50000),
-  ('178125268695975', 'INV-2026-06-000016', 'P000002', 1, 50000)
-ON CONFLICT (id) DO NOTHING;
+  ('178125268695975', 'INV-2026-06-000016', 'P000002', 1, 50000);
 
 -- Purchase Orders
-INSERT INTO purchase_orders (id, date, vendor_id, total, paid_amount, due_date, payment_type_id, status, user_id) VALUES 
+INSERT IGNORE INTO purchase_orders (id, date, vendor_id, total, paid_amount, due_date, payment_type_id, status, user_id) VALUES 
   ('PO-2026-06-000001', '2026-06-12', 'V000002', 500000, 500000, '', 'PT-1', 'Selesai', NULL),
   ('PO-2026-06-000002', '2026-06-12', 'V000001', 225000, 225000, '', 'PT-1', 'Selesai', NULL),
   ('PO-2026-06-000003', '2026-06-12', 'V000002', 92000, 92000, '', 'PT-2', 'Selesai', 1),
@@ -149,11 +135,10 @@ INSERT INTO purchase_orders (id, date, vendor_id, total, paid_amount, due_date, 
   ('PO-2026-06-000006', '2026-06-12', 'V000002', 92000, 92000, '', 'PT-2', 'Selesai', 1),
   ('PO-2026-06-000007', '2026-06-12', 'V000002', 137000, 137000, '', 'PT-2', 'Selesai', 1),
   ('PO-2026-06-000008', '2026-06-12', 'V000001', 50000, 50000, '2026-06-12', 'PT-1', 'Selesai', 1),
-  ('PO-2026-06-000009', '2026-06-12', 'V000001', 75000, 75000, '2026-06-12', 'PT-1', 'Selesai', 1)
-ON CONFLICT (id) DO NOTHING;
+  ('PO-2026-06-000009', '2026-06-12', 'V000001', 75000, 75000, '2026-06-12', 'PT-1', 'Selesai', 1);
 
 -- Purchase Order Items
-INSERT INTO purchase_order_items (id, purchase_order_id, product_id, quantity, cost) VALUES 
+INSERT IGNORE INTO purchase_order_items (id, purchase_order_id, product_id, quantity, cost) VALUES 
   ('POI-1781234357678275', 'PO-2026-06-000001', 'P000002', 10, 50000),
   ('POI-1781234503771832', 'PO-2026-06-000002', 'P000001', 5, 45000),
   ('POI-1781235154108204', 'PO-2026-06-000003', 'P000002', 1, 92000),
@@ -163,11 +148,10 @@ INSERT INTO purchase_order_items (id, purchase_order_id, product_id, quantity, c
   ('POI-1781236025018401', 'PO-2026-06-000007', 'P000002', 1, 92000),
   ('POI-1781236025021116', 'PO-2026-06-000007', 'P000001', 1, 45000),
   ('POI-1781249284847299', 'PO-2026-06-000008', 'P000001', 2, 25000),
-  ('POI-1781249318202564', 'PO-2026-06-000009', 'P000001', 3, 25000)
-ON CONFLICT (id) DO NOTHING;
+  ('POI-1781249318202564', 'PO-2026-06-000009', 'P000001', 3, 25000);
 
 -- Cash Transactions
-INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, purchase_order_id, payment_type_id, user_id, status) VALUES 
+INSERT IGNORE INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, purchase_order_id, payment_type_id, user_id, status) VALUES 
   ('CT000001', '2026-06-11', 'IN', 'Penjualan', 'DP/Pembayaran Invoice INV-2026-06-000001', 1154400, 'Tunai', 'INV-2026-06-000001', NULL, 'PT-1', NULL, 'active'),
   ('CT000002', '2026-06-11', 'IN', 'Penjualan', 'DP/Pembayaran Invoice INV-2026-06-000002', 406260, 'Transfer Bank', 'INV-2026-06-000002', NULL, 'PT-4', NULL, 'active'),
   ('CT000003', '2026-06-11', 'IN', 'Pendapatan', 'Pelunasan/Cicilan Invoice INV-2026-06-000003', 1218780, 'Transfer Bank', 'INV-2026-06-000003', NULL, NULL, NULL, 'active'),
@@ -190,11 +174,10 @@ INSERT INTO cash_transactions (id, date, type, category, description, amount, me
   ('CT000020', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000011', 27750, 'Tunai', 'INV-2026-06-000011', NULL, 'PT-1', 1, 'active'),
   ('CT000021', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000012', 50000, 'Transfer', 'INV-2026-06-000012', NULL, 'PT-4', 1, 'active'),
   ('CT000022', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000014', 50000, 'Tunai', 'INV-2026-06-000014', NULL, 'PT-1', 1, 'active'),
-  ('CT000023', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000015', 50000, 'Transfer', 'INV-2026-06-000015', NULL, 'PT-4', 1, 'active')
-ON CONFLICT (id) DO NOTHING;
+  ('CT000023', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000015', 50000, 'Transfer', 'INV-2026-06-000015', NULL, 'PT-4', 1, 'active');
 
 -- Settings
-INSERT INTO settings (key, value) VALUES 
+INSERT IGNORE INTO settings (`key`, value) VALUES 
   ('modal_pemilik', '0'),
   ('prefix_cash_transaction', 'CT'),
   ('prefix_customer', 'C'),
@@ -203,5 +186,4 @@ INSERT INTO settings (key, value) VALUES
   ('prefix_sales', 'INV-{YYYY}-{MM}-'),
   ('prefix_vendor', 'V'),
   ('ppn_enabled', 'true'),
-  ('pajak_default', '11')
-ON CONFLICT (key) DO NOTHING;
+  ('pajak_default', '11');
