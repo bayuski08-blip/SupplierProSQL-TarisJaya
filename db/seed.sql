@@ -33,11 +33,11 @@ INSERT IGNORE INTO vendor_categories (id, name) VALUES
 
 INSERT IGNORE INTO payment_types (id, name) VALUES 
   ('PT-1', 'Tunai'), 
-  ('PT-4', 'Transfer'),
-  ('PT-5', 'Kredit 1 Hari'),
-  ('PT-6', 'Kredit 7 Hari'),
-  ('PT-7', 'Kredit 14 Hari'),
-  ('PT-8', 'Kredit 30 Hari');
+  ('PT-2', 'Transfer'),
+  ('PT-3', 'Kredit 1 Hari'),
+  ('PT-5', 'Kredit 7 Hari'),
+  ('PT-6', 'Kredit 14 Hari'),
+  ('PT-7', 'Kredit 30 Hari');
 
 INSERT IGNORE INTO cash_categories (id, name, type, is_system) VALUES 
   (1, 'Penjualan', 'IN', 1),
@@ -86,21 +86,21 @@ INSERT IGNORE INTO vendors (id, name, vendor_category_id, phone, city, address, 
 -- Sales Invoices
 INSERT IGNORE INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, due_date, payment_type_id, payment_method, status, user_id) VALUES 
   ('INV-2026-06-000001', '2026-06-12T03:04:20.117Z', 'C000001', 1040000, 0, 114400, 1154400, 1154400, '', 'PT-1', NULL, 'Lunas', NULL),
-  ('INV-2026-06-000002', '2026-06-12T03:04:33.271Z', 'C000002', 366000, 0, 40260, 406260, 406260, '', 'PT-4', NULL, 'Lunas', NULL),
-  ('INV-2026-06-000003', '2026-06-12T03:04:44.635Z', 'C000001', 1098000, 0, 120780, 1218780, 1218780, '', 'PT-2', NULL, 'Lunas', NULL),
+  ('INV-2026-06-000002', '2026-06-12T03:04:33.271Z', 'C000002', 366000, 0, 40260, 406260, 406260, '', 'PT-2', NULL, 'Lunas', NULL),
+  ('INV-2026-06-000003', '2026-06-12T03:04:44.635Z', 'C000001', 1098000, 0, 120780, 1218780, 1218780, '', 'PT-7', NULL, 'Lunas', NULL),
   ('INV-2026-06-000004', '2026-06-12T03:25:55.936Z', 'C000001', 183000, 0, 20130, 203130, 203130, '', 'PT-1', NULL, 'Lunas', NULL),
   ('INV-2026-06-000005', '2026-06-12T03:32:02.936Z', 'C000001', 183000, 0, 20130, 203130, 203130, '', 'PT-1', NULL, 'Lunas', 1),
   ('INV-2026-06-000006', '2026-06-12T03:47:37.630Z', 'C000001', 183000, 0, 20130, 203130, 203130, '', 'PT-1', NULL, 'Lunas', 1),
-  ('INV-2026-06-000007', '2026-06-12T03:47:44.195Z', 'C000002', 183000, 0, 20130, 203130, 203130, '', 'PT-2', NULL, 'Lunas', 1),
-  ('INV-2026-06-000008', '2026-06-12T06:56:49.632Z', 'C000001', 150000, 0, 0, 150000, 150000, '', 'PT-4', NULL, 'Lunas', 1),
-  ('INV-2026-06-000009', '2026-06-12T06:56:55.414Z', 'C000001', 150000, 0, 0, 150000, 150000, '', 'PT-4', NULL, 'Lunas', 1),
+  ('INV-2026-06-000007', '2026-06-12T03:47:44.195Z', 'C000002', 183000, 0, 20130, 203130, 203130, '', 'PT-7', NULL, 'Lunas', 1),
+  ('INV-2026-06-000008', '2026-06-12T06:56:49.632Z', 'C000001', 150000, 0, 0, 150000, 150000, '', 'PT-2', NULL, 'Lunas', 1),
+  ('INV-2026-06-000009', '2026-06-12T06:56:55.414Z', 'C000001', 150000, 0, 0, 150000, 150000, '', 'PT-2', NULL, 'Lunas', 1),
   ('INV-2026-06-000010', '2026-06-12T08:09:01.374Z', 'C000001', 115000, 0, 0, 115000, 115000, '2026-06-30', 'PT-1', NULL, 'Lunas', 1),
   ('INV-2026-06-000011', '2026-06-12T08:15:00.413Z', 'C000001', 27750, 0, 0, 27750, 27750, '2026-06-30', 'PT-1', NULL, 'Lunas', 1),
-  ('INV-2026-06-000012', '2026-06-12T08:19:05.792Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-4', NULL, 'Lunas', 1),
-  ('INV-2026-06-000013', '2026-06-12T08:19:06.130Z', 'C000001', 75000, 0, 0, 75000, 0, '2026-07-12', 'PT-2', NULL, 'Belum Bayar', 1),
+  ('INV-2026-06-000012', '2026-06-12T08:19:05.792Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-2', NULL, 'Lunas', 1),
+  ('INV-2026-06-000013', '2026-06-12T08:19:06.130Z', 'C000001', 75000, 0, 0, 75000, 0, '2026-07-12', 'PT-7', NULL, 'Belum Bayar', 1),
   ('INV-2026-06-000014', '2026-06-12T08:24:46.805Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-1', NULL, 'Lunas', 1),
-  ('INV-2026-06-000015', '2026-06-12T08:24:46.933Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-4', NULL, 'Lunas', 1),
-  ('INV-2026-06-000016', '2026-06-12T08:24:46.954Z', 'C000001', 50000, 0, 0, 50000, 0, '2026-07-30', 'PT-2', NULL, 'Belum Bayar', 1);
+  ('INV-2026-06-000015', '2026-06-12T08:24:46.933Z', 'C000001', 50000, 0, 0, 50000, 50000, '', 'PT-2', NULL, 'Lunas', 1),
+  ('INV-2026-06-000016', '2026-06-12T08:24:46.954Z', 'C000001', 50000, 0, 0, 50000, 0, '2026-07-30', 'PT-7', NULL, 'Belum Bayar', 1);
 
 -- Invoice Items
 INSERT IGNORE INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes) VALUES 
@@ -132,11 +132,11 @@ INSERT IGNORE INTO invoice_items (id, invoice_id, product_id, quantity, price, c
 INSERT IGNORE INTO purchase_orders (id, date, vendor_id, subtotal, discount, tax, total, paid_amount, due_date, payment_type_id, status, user_id) VALUES 
   ('PO-2026-06-000001', '2026-06-12', 'V000002', 500000, 0, 0, 500000, 500000, '', 'PT-1', 'Selesai', NULL),
   ('PO-2026-06-000002', '2026-06-12', 'V000001', 225000, 0, 0, 225000, 225000, '', 'PT-1', 'Selesai', NULL),
-  ('PO-2026-06-000003', '2026-06-12', 'V000002', 92000, 0, 0, 92000, 92000, '', 'PT-2', 'Selesai', 1),
+  ('PO-2026-06-000003', '2026-06-12', 'V000002', 92000, 0, 0, 92000, 92000, '', 'PT-7', 'Selesai', 1),
   ('PO-2026-06-000004', '2026-06-12', 'V000001', 45000, 0, 0, 45000, 45000, '', 'PT-1', 'Selesai', 1),
-  ('PO-2026-06-000005', '2026-06-12', 'V000002', 45000, 0, 0, 45000, 45000, '', 'PT-2', 'Selesai', 1),
-  ('PO-2026-06-000006', '2026-06-12', 'V000002', 92000, 0, 0, 92000, 92000, '', 'PT-2', 'Selesai', 1),
-  ('PO-2026-06-000007', '2026-06-12', 'V000002', 137000, 0, 0, 137000, 137000, '', 'PT-2', 'Selesai', 1),
+  ('PO-2026-06-000005', '2026-06-12', 'V000002', 45000, 0, 0, 45000, 45000, '', 'PT-7', 'Selesai', 1),
+  ('PO-2026-06-000006', '2026-06-12', 'V000002', 92000, 0, 0, 92000, 92000, '', 'PT-7', 'Selesai', 1),
+  ('PO-2026-06-000007', '2026-06-12', 'V000002', 137000, 0, 0, 137000, 137000, '', 'PT-7', 'Selesai', 1),
   ('PO-2026-06-000008', '2026-06-12', 'V000001', 50000, 0, 0, 50000, 50000, '2026-06-12', 'PT-1', 'Selesai', 1),
   ('PO-2026-06-000009', '2026-06-12', 'V000001', 75000, 0, 0, 75000, 75000, '2026-06-12', 'PT-1', 'Selesai', 1);
 
@@ -156,7 +156,7 @@ INSERT IGNORE INTO purchase_order_items (id, purchase_order_id, product_id, quan
 -- Cash Transactions
 INSERT IGNORE INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, purchase_order_id, payment_type_id, user_id, status) VALUES 
   ('CT000001', '2026-06-11', 'IN', 'Penjualan', 'DP/Pembayaran Invoice INV-2026-06-000001', 1154400, 'Tunai', 'INV-2026-06-000001', NULL, 'PT-1', NULL, 'active'),
-  ('CT000002', '2026-06-11', 'IN', 'Penjualan', 'DP/Pembayaran Invoice INV-2026-06-000002', 406260, 'Transfer Bank', 'INV-2026-06-000002', NULL, 'PT-4', NULL, 'active'),
+  ('CT000002', '2026-06-11', 'IN', 'Penjualan', 'DP/Pembayaran Invoice INV-2026-06-000002', 406260, 'Transfer Bank', 'INV-2026-06-000002', NULL, 'PT-2', NULL, 'active'),
   ('CT000003', '2026-06-11', 'IN', 'Pendapatan', 'Pelunasan/Cicilan Invoice INV-2026-06-000003', 1218780, 'Transfer Bank', 'INV-2026-06-000003', NULL, NULL, NULL, 'active'),
   ('CT000004', '2026-06-11', 'OUT', 'Pembelian Stok', 'Bayar PO PO-2026-06-000002', 225000, 'Tunai', NULL, 'PO-2026-06-000002', 'PT-1', NULL, 'active'),
   ('CT000005', '2026-06-11', 'OUT', 'Pembelian Stok', 'Bayar Cicilan PO PO-2026-06-000001', 500000, 'PT-1', NULL, 'PO-2026-06-000001', NULL, NULL, 'active'),
@@ -169,15 +169,15 @@ INSERT IGNORE INTO cash_transactions (id, date, type, category, description, amo
   ('CT000012', '2026-06-11', 'OUT', 'Pembelian Stok', 'Pelunasan PO PO-2026-06-000007', 137000, 'Tunai', NULL, 'PO-2026-06-000007', NULL, 1, 'active'),
   ('CT000013', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000006', 203130, 'Tunai', 'INV-2026-06-000006', NULL, 'PT-1', 1, 'active'),
   ('CT000014', '2026-06-11', 'IN', 'Pelunasan Piutang', 'Pelunasan Invoice INV-2026-06-000007', 203130, 'Transfer Bank', 'INV-2026-06-000007', NULL, NULL, 1, 'active'),
-  ('CT000015', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000008', 150000, 'Transfer', 'INV-2026-06-000008', NULL, 'PT-4', 1, 'active'),
-  ('CT000016', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000009', 150000, 'Transfer', 'INV-2026-06-000009', NULL, 'PT-4', 1, 'active'),
+  ('CT000015', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000008', 150000, 'Transfer', 'INV-2026-06-000008', NULL, 'PT-2', 1, 'active'),
+  ('CT000016', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000009', 150000, 'Transfer', 'INV-2026-06-000009', NULL, 'PT-2', 1, 'active'),
   ('CT000017', '2026-06-11', 'OUT', 'Pembelian Stok', 'Bayar PO-2026-06-000008', 50000, 'Tunai', NULL, 'PO-2026-06-000008', 'PT-1', 1, 'active'),
   ('CT000018', '2026-06-11', 'OUT', 'Pembelian Stok', 'Bayar PO PO-2026-06-000009 (Edit)', 75000, 'Tunai', NULL, 'PO-2026-06-000009', 'PT-1', 1, 'active'),
   ('CT000019', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000010', 115000, 'Tunai', 'INV-2026-06-000010', NULL, 'PT-1', 1, 'active'),
   ('CT000020', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000011', 27750, 'Tunai', 'INV-2026-06-000011', NULL, 'PT-1', 1, 'active'),
-  ('CT000021', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000012', 50000, 'Transfer', 'INV-2026-06-000012', NULL, 'PT-4', 1, 'active'),
+  ('CT000021', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000012', 50000, 'Transfer', 'INV-2026-06-000012', NULL, 'PT-2', 1, 'active'),
   ('CT000022', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000014', 50000, 'Tunai', 'INV-2026-06-000014', NULL, 'PT-1', 1, 'active'),
-  ('CT000023', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000015', 50000, 'Transfer', 'INV-2026-06-000015', NULL, 'PT-4', 1, 'active');
+  ('CT000023', '2026-06-11', 'IN', 'Penjualan', 'Pembayaran Invoice INV-2026-06-000015', 50000, 'Transfer', 'INV-2026-06-000015', NULL, 'PT-2', 1, 'active');
 
 -- Settings
 INSERT IGNORE INTO settings (`key`, value) VALUES 

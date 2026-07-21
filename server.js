@@ -126,11 +126,11 @@ pool.query(`
 (async () => {
   const ptDefaults = [
     { id: 'PT-1', name: 'Tunai' },
-    { id: 'PT-4', name: 'Transfer' },
-    { id: 'PT-5', name: 'Kredit 1 Hari' },
-    { id: 'PT-6', name: 'Kredit 7 Hari' },
-    { id: 'PT-7', name: 'Kredit 14 Hari' },
-    { id: 'PT-8', name: 'Kredit 30 Hari' },
+    { id: 'PT-2', name: 'Transfer' },
+    { id: 'PT-3', name: 'Kredit 1 Hari' },
+    { id: 'PT-5', name: 'Kredit 7 Hari' },
+    { id: 'PT-6', name: 'Kredit 14 Hari' },
+    { id: 'PT-7', name: 'Kredit 30 Hari' },
   ];
   try {
     for (const pt of ptDefaults) {
@@ -139,10 +139,8 @@ pool.query(`
         [pt.id, pt.name]
       );
     }
-    // Rename 'Tempo' → keep for historical data but don't show in new dropdowns
-    // We simply don't insert it — existing PT-2 rows remain intact in old invoices
-    // Remove PT-2 Tempo — replaced by Kredit X Hari types
-    await pool.query(`DELETE FROM payment_types WHERE id = 'PT-2'`).catch(() => {});
+    // Clean up old unused payment type IDs PT-4 and PT-8
+    await pool.query(`DELETE FROM payment_types WHERE id IN ('PT-4', 'PT-8')`).catch(() => {});
     console.log('[Startup] payment_types seeded/upgraded successfully.');
   } catch (err) {
     console.error('[Startup] Failed to seed payment_types:', err.message);
@@ -1162,9 +1160,7 @@ app.post('/api/invoices/manual', authenticateToken, authorizeRoles('admin', 'kas
   const { id, date, due_date, customer_id, total, payment_type_id, payment_method } = req.body;
   const userId = req.user.id;
 
-  if (payment_type_id === 'PT-3') {
-    return res.status(400).json({ error: 'DP tidak diperbolehkan' });
-  }
+
 
   const status = 'Belum Bayar';
   const insertQuery = 'INSERT INTO sales_invoices (id, date, customer_id, subtotal, total, paid_amount, payment_type_id, payment_method, due_date, status, user_id) VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9, $10)';
