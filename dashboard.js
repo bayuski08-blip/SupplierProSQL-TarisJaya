@@ -2910,6 +2910,10 @@ function renderEditInvoiceItems() {
     const container = document.getElementById('edit-invoice-items-container');
     if (!container) return;
     const isAdmin = (localStorage.getItem('role') || 'kasir').toLowerCase() === 'admin';
+    const thFee = document.getElementById('edit-invoice-th-fee');
+    if (thFee) {
+        thFee.style.display = isAdmin ? 'table-cell' : 'none';
+    }
 
     container.innerHTML = '';
     let subtotal = 0;

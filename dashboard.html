@@ -160,12 +160,15 @@
                  ============================================================ -->
                 <section class="page-section active" id="page-dashboard">
                     <!-- Reconciliation Status Alert -->
-                    <div id="reconciliation-alert" style="display: none; margin-bottom: 1.5rem; padding: 1.25rem; border-radius: 8px; background-color: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);">
-                        <div style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.05rem;">
+                    <div id="reconciliation-alert"
+                        style="display: none; margin-bottom: 1.5rem; padding: 1.25rem; border-radius: 8px; background-color: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);">
+                        <div
+                            style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.05rem;">
                             <i data-lucide="alert-triangle" style="color: #e11d48; width: 22px; height: 22px;"></i>
                             <span>Peringatan Ketidaksesuaian Data Keuangan (Reconciliation Alert)</span>
                         </div>
-                        <p style="margin: 0.5rem 0 0 1.75rem; font-size: 0.95rem; line-height: 1.5;" id="reconciliation-alert-text"></p>
+                        <p style="margin: 0.5rem 0 0 1.75rem; font-size: 0.95rem; line-height: 1.5;"
+                            id="reconciliation-alert-text"></p>
                     </div>
 
                     <!-- Summary Cards -->
@@ -316,7 +319,8 @@
                                     <span>Diskon</span>
                                     <span id="cart-discount">Rp 0</span>
                                 </div>
-                                <div id="cart-ppn-row" class="cart-summary-row" style="color: var(--gray-600); display: none;">
+                                <div id="cart-ppn-row" class="cart-summary-row"
+                                    style="color: var(--gray-600); display: none;">
                                     <span>PPN <span id="cart-ppn-label" style="font-size: 0.75rem;">(11%)</span></span>
                                     <span id="cart-ppn">Rp 0</span>
                                 </div>
@@ -978,7 +982,9 @@
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                                            <input type="checkbox" id="settings-ppn-enabled" onchange="handlePpnToggle(this)" style="width: 16px; height: 16px; margin: 0;">
+                                            <input type="checkbox" id="settings-ppn-enabled"
+                                                onchange="handlePpnToggle(this)"
+                                                style="width: 16px; height: 16px; margin: 0;">
                                             Aktifkan PPN
                                         </label>
                                         <div style="margin-top: 10px;">
@@ -1194,19 +1200,30 @@
                 <section class="page-section" id="page-customerfee">
                     <div class="page-toolbar">
                         <div class="page-toolbar-left">
-                            <h2 class="page-title"><i data-lucide="lock" style="width:20px;height:20px;vertical-align:middle;margin-right:0.4rem;color:var(--amber-500);"></i>Laporan Fee Customer <span style="font-size:0.75rem;background:#fef3c7;color:#92400e;padding:0.15rem 0.5rem;border-radius:999px;font-weight:600;vertical-align:middle;">Admin Only</span></h2>
+                            <h2 class="page-title"><i data-lucide="lock"
+                                    style="width:20px;height:20px;vertical-align:middle;margin-right:0.4rem;color:var(--amber-500);"></i>Laporan
+                                Fee Customer <span
+                                    style="font-size:0.75rem;background:#fef3c7;color:#92400e;padding:0.15rem 0.5rem;border-radius:999px;font-weight:600;vertical-align:middle;">Admin
+                                    Only</span></h2>
                         </div>
                         <div class="page-toolbar-right">
                             <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
                                 <div class="form-group" style="margin:0;">
-                                    <label style="font-size:0.75rem;color:var(--gray-500);margin-bottom:0.2rem;display:block;">Dari Tanggal</label>
-                                    <input type="date" id="customerfee-start-date" class="form-input" style="width:auto;padding:0.4rem 0.6rem;font-size:0.85rem;">
+                                    <label
+                                        style="font-size:0.75rem;color:var(--gray-500);margin-bottom:0.2rem;display:block;">Dari
+                                        Tanggal</label>
+                                    <input type="date" id="customerfee-start-date" class="form-input"
+                                        style="width:auto;padding:0.4rem 0.6rem;font-size:0.85rem;">
                                 </div>
                                 <div class="form-group" style="margin:0;">
-                                    <label style="font-size:0.75rem;color:var(--gray-500);margin-bottom:0.2rem;display:block;">Sampai Tanggal</label>
-                                    <input type="date" id="customerfee-end-date" class="form-input" style="width:auto;padding:0.4rem 0.6rem;font-size:0.85rem;">
+                                    <label
+                                        style="font-size:0.75rem;color:var(--gray-500);margin-bottom:0.2rem;display:block;">Sampai
+                                        Tanggal</label>
+                                    <input type="date" id="customerfee-end-date" class="form-input"
+                                        style="width:auto;padding:0.4rem 0.6rem;font-size:0.85rem;">
                                 </div>
-                                <button class="btn-toolbar primary" onclick="renderCustomerFeeReport()" style="align-self:flex-end;padding:0.5rem 1rem;">
+                                <button class="btn-toolbar primary" onclick="renderCustomerFeeReport()"
+                                    style="align-self:flex-end;padding:0.5rem 1rem;">
                                     <i data-lucide="search" style="width:14px;height:14px;"></i> Tampilkan
                                 </button>
                             </div>
@@ -1225,7 +1242,8 @@
                             <div class="dash-card-header">
                                 <span class="dash-card-title">📅 Breakdown per Bulan</span>
                             </div>
-                            <div class="dash-card-body" style="padding:0; max-height:350px; overflow-y:auto; overflow-x:auto;">
+                            <div class="dash-card-body"
+                                style="padding:0; max-height:350px; overflow-y:auto; overflow-x:auto;">
                                 <table class="data-table" id="customerfee-table-bulan">
                                     <thead>
                                         <tr>
@@ -1235,7 +1253,11 @@
                                         </tr>
                                     </thead>
                                     <tbody id="customerfee-body-bulan">
-                                        <tr><td colspan="3" style="text-align:center;padding:2rem;color:var(--gray-400);">Pilih rentang tanggal lalu klik Tampilkan</td></tr>
+                                        <tr>
+                                            <td colspan="3"
+                                                style="text-align:center;padding:2rem;color:var(--gray-400);">Pilih
+                                                rentang tanggal lalu klik Tampilkan</td>
+                                        </tr>
                                     </tbody>
                                 </table>
                             </div>
@@ -1246,7 +1268,8 @@
                             <div class="dash-card-header">
                                 <span class="dash-card-title">📦 Breakdown per Produk</span>
                             </div>
-                            <div class="dash-card-body" style="padding:0; max-height:350px; overflow-y:auto; overflow-x:auto;">
+                            <div class="dash-card-body"
+                                style="padding:0; max-height:350px; overflow-y:auto; overflow-x:auto;">
                                 <table class="data-table" id="customerfee-table-produk">
                                     <thead>
                                         <tr>
@@ -1256,7 +1279,11 @@
                                         </tr>
                                     </thead>
                                     <tbody id="customerfee-body-produk">
-                                        <tr><td colspan="3" style="text-align:center;padding:2rem;color:var(--gray-400);">Pilih rentang tanggal lalu klik Tampilkan</td></tr>
+                                        <tr>
+                                            <td colspan="3"
+                                                style="text-align:center;padding:2rem;color:var(--gray-400);">Pilih
+                                                rentang tanggal lalu klik Tampilkan</td>
+                                        </tr>
                                     </tbody>
                                 </table>
                             </div>
@@ -1268,7 +1295,8 @@
                         <div class="dash-card-header">
                             <span class="dash-card-title">📋 Rincian Detail Fee Customer per Pelanggan & Produk</span>
                         </div>
-                        <div class="dash-card-body" style="padding:0; max-height:450px; overflow-y:auto; overflow-x:auto;">
+                        <div class="dash-card-body"
+                            style="padding:0; max-height:450px; overflow-y:auto; overflow-x:auto;">
                             <table class="data-table" id="customerfee-table-detail">
                                 <thead>
                                     <tr>
@@ -1282,7 +1310,10 @@
                                     </tr>
                                 </thead>
                                 <tbody id="customerfee-body-detail">
-                                    <tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400);">Pilih rentang tanggal lalu klik Tampilkan</td></tr>
+                                    <tr>
+                                        <td colspan="7" style="text-align:center;padding:2rem;color:var(--gray-400);">
+                                            Pilih rentang tanggal lalu klik Tampilkan</td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2429,6 +2460,10 @@
                                 <th
                                     style="padding: 0.75rem; text-align: right; color: var(--gray-600); font-weight: 600; width: 150px;">
                                     Subtotal</th>
+
+                                <th id="edit-invoice-th-fee"
+                                    style="padding: 0.75rem; text-align: left; color: var(--gray-600); font-weight: 600; display: none;">
+                                    Fee & Catatan</th>
                                 <th style="padding: 0.75rem; text-align: center; width: 50px;"></th>
                             </tr>
                         </thead>
@@ -2447,7 +2482,6 @@
                         <select id="edit-invoice-status" class="form-input">
                             <option value="lunas">Lunas</option>
                             <option value="belum">Belum Bayar</option>
-                            <option value="sebagian">Sebagian</option>
                         </select>
                     </div>
                     <div
@@ -2473,7 +2507,7 @@
                     </div>
                 </div>
             </div>
-            <div class="modal-footer" style="justify-content: space-between;">
+            <div class="modal-footer" style="justify-content: space-between; align-items: center;">
                 <div>
                     <button class="btn-toolbar primary"
                         style="background: var(--rose-600); border-color: var(--rose-600); color: white;"
@@ -2481,14 +2515,15 @@
                         <i data-lucide="x-circle"></i> Batalkan Invoice
                     </button>
                 </div>
-                <div style="display: gap: 0.5rem; display: flex;">
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
                     <button class="btn-toolbar secondary"
-                        onclick="closeModal('modal-edit-invoice'); openModal('modal-print-invoice')">
+                        onclick="closeModal('modal-edit-invoice'); printInvoice(document.getElementById('edit-invoice-id').value)">
                         <i data-lucide="printer"></i> Print
                     </button>
                     <button class="btn-toolbar secondary" onclick="closeModal('modal-edit-invoice')">Discard</button>
-                    <button class="btn-toolbar primary" onclick="saveInvoiceEdits()"><i data-lucide="save"></i>
-                        Save</button>
+                    <button class="btn-toolbar primary" onclick="saveInvoiceEdits()">
+                        <i data-lucide="save"></i> Save
+                    </button>
                 </div>
             </div>
         </div>
@@ -2669,9 +2704,12 @@
                 <span class="close" onclick="closeModal('modal-confirm-ppn')">&times;</span>
             </div>
             <div class="modal-body" style="padding: 20px; line-height: 1.5; color: var(--gray-700);">
-                <p>Bisnis ini sudah punya transaksi. Mengubah pengaturan PPN akan mempengaruhi perhitungan pada SEMUA invoice (termasuk yang sudah dibuat sebelumnya), karena invoice selalu mengikuti pengaturan PPN yang berlaku saat ini. Lanjutkan?</p>
+                <p>Bisnis ini sudah punya transaksi. Mengubah pengaturan PPN akan mempengaruhi perhitungan pada SEMUA
+                    invoice (termasuk yang sudah dibuat sebelumnya), karena invoice selalu mengikuti pengaturan PPN yang
+                    berlaku saat ini. Lanjutkan?</p>
             </div>
-            <div class="modal-footer" style="padding: 16px 20px; border-top: 1px solid var(--gray-200); display: flex; justify-content: flex-end; gap: 12px;">
+            <div class="modal-footer"
+                style="padding: 16px 20px; border-top: 1px solid var(--gray-200); display: flex; justify-content: flex-end; gap: 12px;">
                 <button class="btn-toolbar secondary" onclick="cancelPpnToggle()">
                     Batalkan
                 </button>
@@ -2784,14 +2822,29 @@
                 <div style="flex: 0 0 30%; text-align: center;">
                     <img id="print-company-logo" src=""
                         style="max-height: 140px; max-width: 100%; display: none; margin: 0 auto;">
-                    <h2 id="print-company-name" style="margin: 0.5rem 0 0 0; font-size: 1.25rem; color: #000;"></h2>
                 </div>
                 <div style="flex: 0 0 65%; color: #000; font-size: 0.875rem; line-height: 1.6;">
-                    <div id="print-company-address" style="font-weight: bold; font-size: 1rem; margin-bottom: 0.25rem;">
-                    </div>
-                    <div style="font-weight: bold;">Email : <span id="print-company-email"></span></div>
-                    <div style="font-weight: bold; margin-bottom: 1rem;">Tlp : <span id="print-company-phone"></span>
-                    </div>
+                    <h2 id="print-company-name"
+                        style="margin: 0 0 0.25rem 0; font-size: 1.25rem; color: #000; font-weight: bold;"></h2>
+                    <table style="font-size: 0.875rem; border: none; border-collapse: collapse; margin-bottom: 0.5rem;">
+                        <tr>
+                            <td
+                                style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap; vertical-align: top;">
+                                Alamat</td>
+                            <td style="vertical-align: top; padding: 0.1rem 0;">: <span
+                                    id="print-company-address"></span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap;">Email
+                            </td>
+                            <td style="padding: 0.1rem 0;">: <span id="print-company-email"></span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap;">Tlp
+                            </td>
+                            <td style="padding: 0.1rem 0;">: <span id="print-company-phone"></span></td>
+                        </tr>
+                    </table>
 
                     <table style="font-size: 0.875rem; border: none; width: 100%; border-collapse: collapse;">
                         <tr>
