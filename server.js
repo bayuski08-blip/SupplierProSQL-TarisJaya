@@ -5,7 +5,7 @@ const cors = require('cors');
 const mysql = require('mysql2/promise');
 const path = require('path');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs'); // bcryptjs = pure JS, tidak perlu native compile (aman di shared hosting)
 const fs = require('fs');
 
 const app = express();
@@ -2771,6 +2771,15 @@ setTimeout(() => {
   runDailyReconciliation();
 }, 10000);
 
-app.listen(port, () => {
-  console.log(`SupplierPro API running at http://localhost:${port}`);
+// Bind ke 0.0.0.0 agar bisa diakses dari luar (wajib di hosting)
+app.listen(port, '0.0.0.0', () => {
+  console.log(`SupplierPro API running on port ${port} (0.0.0.0)`);
+});
+
+// Global error handler — pastikan server tidak crash diam-diam
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled Rejection:', reason);
 });
