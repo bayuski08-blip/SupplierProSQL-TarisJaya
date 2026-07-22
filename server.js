@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
@@ -17,15 +19,17 @@ app.use(express.static(__dirname)); // Serve static files from the current direc
 
 // ─── MySQL Connection Pool (with pg-compatible wrapper) ───────────────────────
 // Parse mysql://user:pass@host:port/db  OR  use individual env vars
-const dbUrl = process.env.DATABASE_URL || 'mysql://root:@localhost:3306/supplierpro';
+const dbUrl = process.env.DATABASE_URL
+  || `mysql://${process.env.DB_USER || 'root'}:${process.env.DB_PASSWORD || ''}@${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}/${process.env.DB_NAME || 'supplierpro'}`;
+
 const urlParsed = new URL(dbUrl);
 
 const mysqlPool = mysql.createPool({
-  host:     urlParsed.hostname || 'localhost',
+  host:     urlParsed.hostname,
   port:     parseInt(urlParsed.port) || 3306,
-  user:     urlParsed.username || 'root',
-  password: urlParsed.password || '',
-  database: urlParsed.pathname.replace('/', '') || 'supplierpro',
+  user:     urlParsed.username,
+  password: urlParsed.password,
+  database: urlParsed.pathname.replace('/', ''),
   waitForConnections: true,
   connectionLimit: 10,
   timezone: '+08:00'  // WITA (UTC+8) — ensures DATE() functions align with Indonesian business time
