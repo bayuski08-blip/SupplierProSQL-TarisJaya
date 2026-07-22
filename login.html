@@ -180,36 +180,58 @@
 
             try {
                 // Ensure to call the correct API endpoint
-                const res = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, password })
-                });
-
-                const data = await res.json();
+                let res, data;
+                try {
+                    res = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    data = await res.json();
+                } catch (networkErr) {
+                    // Fetch gagal total — server tidak bisa dijangkau sama sekali
+                    errorEl.innerHTML = '🔴 <strong>Server tidak dapat dijangkau.</strong><br>'
+                        + 'Express.js tidak berjalan atau port tidak terbuka di hosting.<br>'
+                        + '<small style="opacity:0.8">Cek: Logs → apakah server berhasil start? Apakah PORT env sudah di-set?</small>';
+                    errorEl.style.display = 'block';
+                    btn.innerHTML = 'Masuk <i data-lucide="log-in" style="width:18px;height:18px;"></i>';
+                    lucide.createIcons();
+                    return;
+                }
 
                 if (res.ok) {
-                    // Save token and user info
                     localStorage.setItem('token', data.token);
                     localStorage.setItem('username', data.username);
                     localStorage.setItem('role', data.role);
                     localStorage.setItem('name', data.name || '');
-                    
-                    // Redirect to dashboard
                     window.location.href = 'dashboard.html';
                 } else {
-                    errorEl.textContent = data.error || 'Terjadi kesalahan login';
+                    // Server bisa dijangkau tapi ada error
+                    let msg = '';
+                    const code = data.error_code || '';
+                    if (code === 'DB_CONNECTION_ERROR') {
+                        msg = '🟠 <strong>Koneksi database gagal.</strong><br>'
+                            + (data.error || '') + '<br>'
+                            + '<small style="opacity:0.8">Cek: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME di environment variables hosting.</small>';
+                    } else if (code === 'INVALID_CREDENTIALS' || res.status === 401) {
+                        msg = '🔑 Username atau password salah.';
+                    } else if (code === 'SERVER_ERROR' || res.status === 500) {
+                        msg = '🔴 <strong>Server error (500).</strong><br>'
+                            + (data.error || 'Terjadi kesalahan internal.') + '<br>'
+                            + '<small style="opacity:0.8">Cek server logs di hosting untuk detail error.</small>';
+                    } else {
+                        msg = data.error || 'Terjadi kesalahan login.';
+                    }
+                    errorEl.innerHTML = msg;
                     errorEl.style.display = 'block';
-                    btn.innerHTML = 'Masuk <i data-lucide="log-in" style="width: 18px; height: 18px;"></i>';
+                    btn.innerHTML = 'Masuk <i data-lucide="log-in" style="width:18px;height:18px;"></i>';
                     lucide.createIcons();
                 }
             } catch (err) {
                 console.error(err);
-                errorEl.textContent = 'Tidak dapat terhubung ke server API.';
+                errorEl.textContent = 'Terjadi kesalahan tidak terduga: ' + err.message;
                 errorEl.style.display = 'block';
-                btn.innerHTML = 'Masuk <i data-lucide="log-in" style="width: 18px; height: 18px;"></i>';
+                btn.innerHTML = 'Masuk <i data-lucide="log-in" style="width:18px;height:18px;"></i>';
                 lucide.createIcons();
             }
         });

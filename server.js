@@ -309,7 +309,7 @@ app.post('/api/auth/login', async (req, res) => {
     const user = result.rows[0];
 
     if (!user) {
-      return res.status(401).json({ error: 'Username atau password salah' });
+      return res.status(401).json({ error_code: 'INVALID_CREDENTIALS', error: 'Username atau password salah' });
     }
 
     const isBcryptHash = user.password_hash.startsWith('$2b$') || user.password_hash.startsWith('$2a$');
@@ -330,13 +330,24 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     if (!isMatch) {
-      return res.status(401).json({ error: 'Username atau password salah' });
+      return res.status(401).json({ error_code: 'INVALID_CREDENTIALS', error: 'Username atau password salah' });
     }
 
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role, name: user.name }, SECRET_KEY, { expiresIn: '24h' });
     res.json({ token, role: user.role, username: user.username, name: user.name });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[LOGIN ERROR]', err.message);
+    // Detect DB connection errors specifically
+    const isDbError = err.code === 'ECONNREFUSED' || err.code === 'ER_ACCESS_DENIED_ERROR'
+      || err.code === 'ER_BAD_DB_ERROR' || err.code === 'ENOTFOUND'
+      || err.code === 'ETIMEDOUT' || err.code === 'ER_NO_DB_ERROR';
+    if (isDbError) {
+      return res.status(503).json({
+        error_code: 'DB_CONNECTION_ERROR',
+        error: `Koneksi database gagal (${err.code}): ${err.message}`
+      });
+    }
+    res.status(500).json({ error_code: 'SERVER_ERROR', error: err.message });
   }
 });
 
