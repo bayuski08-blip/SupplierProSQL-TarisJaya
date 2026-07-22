@@ -10,6 +10,14 @@ const fs = require('fs');
 
 const app = express();
 const port = process.env.PORT || 3000;
+// ─── Global crash handlers — harus di atas sebelum kode lain ───────────────
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled Rejection:', reason);
+});
+
 const SECRET_KEY = process.env.JWT_SECRET || 'supplierpro_secret_key_demo';
 
 // Middleware
@@ -291,6 +299,44 @@ const authorizeRoles = (...allowedRoles) => {
 };
 
 // ======================= API ROUTES =======================
+
+// ─── Health Check Endpoints (tanpa auth, untuk diagnostik hosting) ───────────
+// Buka di browser: https://yourdomain.com/health
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    server: 'Express.js running',
+    port: process.env.PORT || 3000,
+    node: process.version,
+    env: process.env.NODE_ENV || 'development',
+    time: new Date().toISOString()
+  });
+});
+
+// Buka di browser: https://yourdomain.com/api/health
+app.get('/api/health', async (req, res) => {
+  const info = {
+    status: 'ok',
+    server: 'Express.js running',
+    port: process.env.PORT || 3000,
+    node: process.version,
+    env: process.env.NODE_ENV || 'development',
+    time: new Date().toISOString(),
+    db_host: process.env.DB_HOST || process.env.DATABASE_URL ? '(set)' : '(not set)',
+    db_name: process.env.DB_NAME || '(not set)',
+    db_user: process.env.DB_USER || '(not set)',
+    db: 'checking...'
+  };
+  try {
+    await pool.query('SELECT 1');
+    info.db = 'connected ✓';
+    res.json(info);
+  } catch (err) {
+    info.db = `FAILED: ${err.code} — ${err.message}`;
+    info.status = 'degraded';
+    res.status(503).json(info);
+  }
+});
 
 app.get('/api/transactions/count', authenticateToken, async (req, res) => {
   try {
