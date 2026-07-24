@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="id">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -21,7 +20,7 @@
             --white: #ffffff;
             --danger: #ef4444;
         }
-
+        
         * {
             box-sizing: border-box;
             margin: 0;
@@ -132,33 +131,38 @@
         }
     </style>
 </head>
-
 <body>
 
     <div class="login-container">
-        <a href="#" class="logo">
+        <a href="index.html" class="logo">
             <i data-lucide="boxes"></i>
             SupplierPro
         </a>
         <h2>Masuk ke Dashboard</h2>
-
+        
         <div class="error-message" id="error-message">Username atau password salah</div>
-
+        
         <form id="login-form">
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" required placeholder="Masukkan username">
             </div>
-
+            
             <div class="form-group">
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required placeholder="Masukkan password">
             </div>
-
+            
             <button type="submit" id="btn-login">
                 Masuk <i data-lucide="log-in" style="width: 18px; height: 18px;"></i>
             </button>
         </form>
+
+        <div class="hint">
+            <strong>Demo Account:</strong><br>
+            Username: <code>admin</code><br>
+            Password: <code>admin123</code>
+        </div>
     </div>
 
     <script>
@@ -233,5 +237,4 @@
         });
     </script>
 </body>
-
 </html>
