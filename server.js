@@ -23,6 +23,11 @@ const SECRET_KEY = process.env.JWT_SECRET || 'supplierpro_secret_key_demo';
 // Middleware
 app.use(cors());
 app.use(express.json());
+// Redirect landing page to login page
+app.get(['/', '/index.html'], (req, res) => {
+  res.redirect('/login.html');
+});
+
 app.use(express.static(__dirname)); // Serve static files from the current directory
 
 // ─── MySQL Connection Pool (with pg-compatible wrapper) ───────────────────────
