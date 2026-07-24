@@ -132,6 +132,19 @@ pool.query(`
   `);
 }).catch(err => console.error('Error initializing settings table on startup:', err));
 
+// Auto-migrate: ensure brand column exists in products table
+(async () => {
+  try {
+    const [cols] = await mysqlPool.query("SHOW COLUMNS FROM products LIKE 'brand'");
+    if (!cols || cols.length === 0) {
+      await mysqlPool.query("ALTER TABLE products ADD COLUMN brand VARCHAR(255) DEFAULT NULL AFTER sku");
+      console.log('[Startup] Column brand added to products table.');
+    }
+  } catch (err) {
+    console.error('[Startup] Failed to check/add brand column:', err.message);
+  }
+})();
+
 // MySQL auto-manages AUTO_INCREMENT — no sequence reset needed
 
 // Seed/upgrade payment_types on startup
@@ -767,13 +780,33 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/products/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT p.*, c.name as category, u.name as unit 
+      FROM products p 
+      LEFT JOIN product_categories c ON p.category_id = c.id 
+      LEFT JOIN product_units u ON p.unit_id = u.id
+      WHERE p.id = $1
+    `, [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Produk tidak ditemukan' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/products', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
-  const { id, sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id } = req.body;
-  const insertQuery = 'INSERT INTO products (id, sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)';
+  const { id, sku, brand, name, category_id, cost_price, sell_price, stock, min_stock, unit_id } = req.body;
+  const brandVal = (brand !== undefined && brand !== null && String(brand).trim() !== '') ? String(brand).trim() : null;
+  const insertQuery = 'INSERT INTO products (id, sku, brand, name, category_id, cost_price, sell_price, stock, min_stock, unit_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)';
   try {
     const prefix = await getSetting('prefix_product', 'P');
     const nextId = await generateNextId(pool, 'products', prefix);
-    await pool.query(insertQuery, [id || nextId, sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id || 'PU-1']);
+    await pool.query(insertQuery, [id || nextId, sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id || 'PU-1']);
     res.json({ success: true, message: 'Produk berhasil ditambahkan' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -782,10 +815,11 @@ app.post('/api/products', authenticateToken, authorizeRoles('admin', 'gudang'), 
 
 app.put('/api/products/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
   const { id } = req.params;
-  const { sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id } = req.body;
-  const updateQuery = 'UPDATE products SET sku = $1, name = $2, category_id = $3, cost_price = $4, sell_price = $5, stock = $6, min_stock = $7, unit_id = $8 WHERE id = $9';
+  const { sku, brand, name, category_id, cost_price, sell_price, stock, min_stock, unit_id } = req.body;
+  const brandVal = (brand !== undefined && brand !== null && String(brand).trim() !== '') ? String(brand).trim() : null;
+  const updateQuery = 'UPDATE products SET sku = $1, brand = $2, name = $3, category_id = $4, cost_price = $5, sell_price = $6, stock = $7, min_stock = $8, unit_id = $9 WHERE id = $10';
   try {
-    const result = await pool.query(updateQuery, [sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id, id]);
+    const result = await pool.query(updateQuery, [sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id, id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Produk tidak ditemukan' });
     }

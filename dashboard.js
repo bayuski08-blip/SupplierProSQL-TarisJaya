@@ -216,6 +216,7 @@ document.getElementById('sidebar-overlay').addEventListener('click', () => {
 function openModal(id) {
     document.getElementById(id).classList.add('active');
     if (id === 'modal-add-product') {
+        const brandEl = document.getElementById('add-product-brand');
         const skuEl = document.getElementById('add-product-sku');
         const nameEl = document.getElementById('add-product-name');
         const priceEl = document.getElementById('add-product-price');
@@ -223,6 +224,7 @@ function openModal(id) {
         const stockEl = document.getElementById('add-product-stock');
         const minStockEl = document.getElementById('add-product-minstock');
 
+        if (brandEl) brandEl.value = '';
         if (skuEl) skuEl.value = '';
         if (nameEl) nameEl.value = '';
         if (priceEl) priceEl.value = '';
@@ -2076,6 +2078,7 @@ async function fetchProducts() {
         PRODUCTS = data.map(p => ({
             id: p.id,
             sku: p.sku,
+            brand: p.brand || '',
             name: p.name,
             category: p.category,
             category_id: p.category_id,
@@ -2102,6 +2105,7 @@ async function saveProduct(isEdit) {
     const categoryValue = categoryEl ? categoryEl.value : '';
 
     const payload = {
+        brand: document.getElementById(`${prefix}-product-brand`)?.value.trim() || null,
         name: document.getElementById(`${prefix}-product-name`).value,
         sku: document.getElementById(`${prefix}-product-sku`).value,
         category_id: categoryValue,   // FIX: backend expects category_id not category
@@ -2144,6 +2148,8 @@ function openEditProductModal(id) {
     const p = PRODUCTS.find(x => x.id === id);
     if (!p) return;
     document.getElementById('edit-product-id').value = p.id;
+    const brandEl = document.getElementById('edit-product-brand');
+    if (brandEl) brandEl.value = p.brand || '';
     document.getElementById('edit-product-name').value = p.name;
     document.getElementById('edit-product-sku').value = p.sku;
     // FIX: set category select — try both category_id and category name

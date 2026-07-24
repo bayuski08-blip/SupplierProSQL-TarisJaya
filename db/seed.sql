@@ -69,9 +69,9 @@ INSERT IGNORE INTO users (id, username, name, email, password_hash, role, active
   (5, 'demo_kasir', 'Demo Kasir', 'kasir@supplierpro.id', 'Kasir123', 'kasir', 1);
 
 -- Products
-INSERT IGNORE INTO products (id, sku, name, category_id, cost_price, sell_price, stock, min_stock, unit_id) VALUES 
-  ('P000001', 'MNM-001', 'Kopi Arabica 250g', 'PC-1', 45000, 68000, 118, 20, 'PU-5'),
-  ('P000002', 'MKN-001', 'Mie Instan Goreng (dus)', 'PC-2', 92000, 115000, 35, 10, 'PU-4');
+INSERT IGNORE INTO products (id, sku, brand, name, category_id, cost_price, sell_price, stock, min_stock, unit_id) VALUES 
+  ('P000001', 'MNM-001', NULL, 'Kopi Arabica 250g', 'PC-1', 45000, 68000, 118, 20, 'PU-5'),
+  ('P000002', 'MKN-001', 'Indomie', 'Mie Instan Goreng (dus)', 'PC-2', 92000, 115000, 35, 10, 'PU-4');
 
 -- Customers
 INSERT IGNORE INTO customers (id, name, customer_category_id, phone, city, address, credit_lmt) VALUES 
