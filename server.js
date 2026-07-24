@@ -39,9 +39,9 @@ const dbUrl = process.env.DATABASE_URL
 const urlParsed = new URL(dbUrl);
 
 const mysqlPool = mysql.createPool({
-  host:     urlParsed.hostname,
-  port:     parseInt(urlParsed.port) || 3306,
-  user:     urlParsed.username,
+  host: urlParsed.hostname,
+  port: parseInt(urlParsed.port) || 3306,
+  user: urlParsed.username,
   password: urlParsed.password,
   database: urlParsed.pathname.replace('/', ''),
   waitForConnections: true,
@@ -69,9 +69,9 @@ function pgify(conn) {
 
     // Intercept transaction keywords
     const trimmed = mysqlSql.trim().toUpperCase();
-    if (trimmed === 'BEGIN')    { await conn.query('START TRANSACTION'); return { rows: [], rowCount: 0 }; }
-    if (trimmed === 'COMMIT')   { await conn.query('COMMIT');            return { rows: [], rowCount: 0 }; }
-    if (trimmed === 'ROLLBACK') { await conn.query('ROLLBACK');          return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'BEGIN') { await conn.query('START TRANSACTION'); return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'COMMIT') { await conn.query('COMMIT'); return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'ROLLBACK') { await conn.query('ROLLBACK'); return { rows: [], rowCount: 0 }; }
 
     const [result] = await conn.query(mysqlSql, params);
 
@@ -80,8 +80,8 @@ function pgify(conn) {
       return { rows: result, rowCount: result.length };
     } else {
       // INSERT / UPDATE / DELETE
-      const insertId  = result.insertId  || 0;
-      const affected  = result.affectedRows || 0;
+      const insertId = result.insertId || 0;
+      const affected = result.affectedRows || 0;
       // If RETURNING was requested expose id so callers using result.rows[0].id still work
       const rows = returningMatch ? [{ id: insertId || (params[0] ?? null) }] : [];
       return { rows, rowCount: affected, affectedRows: affected, insertId };
@@ -89,7 +89,7 @@ function pgify(conn) {
   };
 
   return {
-    query:   execQuery,
+    query: execQuery,
     release: () => (typeof conn.release === 'function' ? conn.release() : null),
   };
 }
@@ -158,7 +158,7 @@ pool.query(`
       );
     }
     // Clean up old unused payment type IDs PT-4 and PT-8
-    await pool.query(`DELETE FROM payment_types WHERE id IN ('PT-4', 'PT-8')`).catch(() => {});
+    await pool.query(`DELETE FROM payment_types WHERE id IN ('PT-4', 'PT-8')`).catch(() => { });
     console.log('[Startup] payment_types seeded/upgraded successfully.');
   } catch (err) {
     console.error('[Startup] Failed to seed payment_types:', err.message);
@@ -169,23 +169,23 @@ pool.query(`
 (async () => {
   // MySQL: UNIQUE constraint already defined in schema — no pg_constraint check needed
   const defaults = [
-    { name: 'Penjualan',              type: 'IN',   is_system: 1 },
-    { name: 'Pelunasan Piutang',      type: 'IN',   is_system: 1 },
-    { name: 'Pembelian Stok',         type: 'OUT',  is_system: 1 },
-    { name: 'Penyesuaian Stok',       type: 'OUT',  is_system: 1 },
-    { name: 'Pelunasan Hutang',       type: 'OUT',  is_system: 1 },
-    { name: 'Gaji & Tunjangan',       type: 'OUT',  is_system: 0 },
-    { name: 'Sewa',                   type: 'OUT',  is_system: 0 },
-    { name: 'Operasional',            type: 'OUT',  is_system: 0 },
-    { name: 'Marketing',              type: 'OUT',  is_system: 0 },
-    { name: 'Pajak',                  type: 'OUT',  is_system: 0 },
-    { name: 'Pembelian Aset',         type: 'OUT',  is_system: 0 },
-    { name: 'Prive Pemilik',          type: 'OUT',  is_system: 0 },
-    { name: 'Pengeluaran Lainnya',    type: 'OUT',  is_system: 0 },
-    { name: 'Pendapatan Lainnya',     type: 'IN',   is_system: 0 },
-    { name: 'Pinjaman Masuk',         type: 'IN',   is_system: 0 },
-    { name: 'Setoran Modal',          type: 'IN',   is_system: 0 },
-    { name: 'Transfer Antar Kas/Bank',type: 'BOTH', is_system: 0 },
+    { name: 'Penjualan', type: 'IN', is_system: 1 },
+    { name: 'Pelunasan Piutang', type: 'IN', is_system: 1 },
+    { name: 'Pembelian Stok', type: 'OUT', is_system: 1 },
+    { name: 'Penyesuaian Stok', type: 'OUT', is_system: 1 },
+    { name: 'Pelunasan Hutang', type: 'OUT', is_system: 1 },
+    { name: 'Gaji & Tunjangan', type: 'OUT', is_system: 0 },
+    { name: 'Sewa', type: 'OUT', is_system: 0 },
+    { name: 'Operasional', type: 'OUT', is_system: 0 },
+    { name: 'Marketing', type: 'OUT', is_system: 0 },
+    { name: 'Pajak', type: 'OUT', is_system: 0 },
+    { name: 'Pembelian Aset', type: 'OUT', is_system: 0 },
+    { name: 'Prive Pemilik', type: 'OUT', is_system: 0 },
+    { name: 'Pengeluaran Lainnya', type: 'OUT', is_system: 0 },
+    { name: 'Pendapatan Lainnya', type: 'IN', is_system: 0 },
+    { name: 'Pinjaman Masuk', type: 'IN', is_system: 0 },
+    { name: 'Setoran Modal', type: 'IN', is_system: 0 },
+    { name: 'Transfer Antar Kas/Bank', type: 'BOTH', is_system: 0 },
   ];
   try {
     for (const item of defaults) {
@@ -208,7 +208,7 @@ pool.query(`
             )
           ) sub
         )
-    `).catch(() => {}); // non-fatal
+    `).catch(() => { }); // non-fatal
     console.log('[Startup] cash_categories seeded/upgraded successfully.');
   } catch (err) {
     console.error('[Startup] Failed to seed cash_categories:', err.message);
@@ -1040,7 +1040,7 @@ app.get('/api/invoices/:id/items', authenticateToken, authorizeRoles('admin', 'k
 app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const invRes = await pool.query(`
       SELECT si.*, c.name as customer_name, pt.name as payment_type_name
       FROM sales_invoices si
@@ -1048,13 +1048,13 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
       LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
       WHERE si.id = $1
     `, [id]);
-    
+
     if (invRes.rows.length === 0) {
       return res.status(404).json({ error: 'Invoice tidak ditemukan' });
     }
-    
+
     const invoiceRow = invRes.rows[0];
-    
+
     const itemsRes = await pool.query(`
       SELECT ii.*, p.name as product_name, pu.name as unit_name
       FROM invoice_items ii
@@ -1062,7 +1062,7 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
       LEFT JOIN product_units pu ON p.unit_id = pu.id
       WHERE ii.invoice_id = $1
     `, [id]);
-    
+
     const settingsRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('company_name', 'company_phone', 'company_email', 'company_address', 'company_logo', 'ppn_enabled', 'pajak_default')`);
     const company = {};
     const settingsMap = {};
@@ -1078,10 +1078,10 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
     const subtotal = parseFloat(invoiceRow.subtotal || 0);
     const diskon = parseFloat(invoiceRow.discount || 0);
-    
+
     const recalculatedTax = ppnEnabled ? Math.round((subtotal - diskon) * (pajakDefault / 100)) : 0;
     const recalculatedTotal = subtotal - diskon + recalculatedTax;
-    
+
     res.json({
       invoice: {
         id: invoiceRow.id,
@@ -1148,10 +1148,10 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -1174,7 +1174,7 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
 
     const prefix = await getSetting('prefix_sales', 'INV/{YYYY}/{MM}/');
     const id = await generateNextId(client, 'sales_invoices', prefix);
-    
+
     console.log(`[Invoice Creation API] Saving invoice ${id} with payment_type_id: "${payment_type_id}"`);
     await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, due_date, status, userId]);
 
@@ -1992,10 +1992,10 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -2066,10 +2066,10 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -2179,10 +2179,10 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -2526,7 +2526,7 @@ app.get('/login', (req, res) => {
     const bcrypt = require('bcrypt');
     const newAdminPassword = 'Admin@2026';
     const hashedPassword = await bcrypt.hash(newAdminPassword, 10);
-    
+
     await pool.query(`
       INSERT IGNORE INTO users (username, name, email, password_hash, role, active)
       VALUES ('superadmin', 'Super Administrator', 
@@ -2652,7 +2652,7 @@ app.get('/api/finance/reconciliation-status', authenticateToken, authorizeRoles(
 async function runDailyReconciliation() {
   const logFile = path.join(__dirname, 'reconciliation.log');
   const now = new Date();
-  
+
   // Reconcile for current month and previous month
   const targetMonths = [
     { month: now.getMonth() + 1, year: now.getFullYear() }
@@ -2675,7 +2675,7 @@ async function runDailyReconciliation() {
     for (const target of targetMonths) {
       const { month, year } = target;
       const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      
+
       const lastDayResult = await client.query(`SELECT LAST_DAY(?) AS end_date`, [startDate]);
       const rawEndDate = lastDayResult.rows[0]?.end_date;
       let endDate = '';
@@ -2749,7 +2749,7 @@ async function runDailyReconciliation() {
         WHERE status NOT IN ('Selesai', 'Dibatalkan', 'Batal') AND DATE(date) <= ?
       `, [endDate]);
       const hutangUsaha = parseFloat(resHutang.rows[0].hutang);
-      
+
       const resModal = await client.query(`SELECT value FROM settings WHERE \`key\` = 'modal_pemilik'`);
       const modalPemilik = parseFloat(resModal.rows[0]?.value || 0);
       const labaDitahan = totalAset - hutangUsaha - modalPemilik;

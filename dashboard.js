@@ -367,7 +367,7 @@ async function checkReconciliationStatus() {
             const alertEl = document.getElementById('reconciliation-alert');
             const alertText = document.getElementById('reconciliation-alert-text');
             if (data.success && data.status && !data.status.balanced) {
-                alertText.innerHTML = `Ditemukan ketidaksesuaian data keuangan pada pencatatan otomatis harian. Masalah:<br/>` + 
+                alertText.innerHTML = `Ditemukan ketidaksesuaian data keuangan pada pencatatan otomatis harian. Masalah:<br/>` +
                     data.status.issues.map(issue => `• ${issue}`).join('<br/>') +
                     `<br/><span style="font-weight: 600; margin-top: 0.5rem; display: inline-block;">Silakan periksa laporan keuangan dan log transaksi cash flow.</span>`;
                 alertEl.style.display = 'block';
@@ -1555,14 +1555,14 @@ function renderCart() {
         container.innerHTML = `<div class="empty-state" id="cart-empty"><i data-lucide="shopping-bag"></i><p>Keranjang masih kosong</p></div>`;
         document.getElementById('cart-subtotal').textContent = 'Rp 0';
         document.getElementById('cart-discount').textContent = 'Rp 0';
-        
+
         const ppnRowEl = document.getElementById('cart-ppn-row');
         const ppnEl = document.getElementById('cart-ppn');
         const ppnLabelEl = document.getElementById('cart-ppn-label');
         if (ppnRowEl) ppnRowEl.style.display = currentPpnEnabled ? 'flex' : 'none';
         if (ppnEl) ppnEl.textContent = 'Rp 0';
         if (ppnLabelEl) ppnLabelEl.textContent = `(${currentPpnRate}%)`;
-        
+
         document.getElementById('cart-total').textContent = 'Rp 0';
         lucide.createIcons();
         return;
@@ -3821,10 +3821,10 @@ async function loadInvoicePreferences() {
             const settings = await resSet.json();
             currentPpnEnabled = settings.ppn_enabled !== 'false';
             currentPpnRate = parseFloat(settings.pajak_default || 11);
-            
+
             const ppnCheck = document.getElementById('settings-ppn-enabled');
             if (ppnCheck) ppnCheck.checked = currentPpnEnabled;
-            
+
             const ppnInput = document.getElementById('settings-ppn');
             if (ppnInput) {
                 ppnInput.value = currentPpnRate;
@@ -3837,7 +3837,7 @@ async function loadInvoicePreferences() {
             transactionCount = parseInt(countData.count || 0, 10);
             console.log('Loaded transaction count for PPN toggle:', transactionCount);
         }
-        
+
         // Update the cart view in POS to reflect initial PPN settings
         if (typeof renderCart === 'function') {
             renderCart();
@@ -3874,7 +3874,7 @@ async function saveInvoicePreferences() {
     }
 }
 
-window.handlePpnToggle = function(el) {
+window.handlePpnToggle = function (el) {
     const isChecked = el.checked;
     console.log('PPN toggle changed to:', isChecked, 'transactionCount:', transactionCount);
     if (transactionCount > 0) {
@@ -3886,7 +3886,7 @@ window.handlePpnToggle = function(el) {
     }
 };
 
-window.confirmPpnToggle = function() {
+window.confirmPpnToggle = function () {
     const ppnCheck = document.getElementById('settings-ppn-enabled');
     const ppnInput = document.getElementById('settings-ppn');
     if (ppnCheck) ppnCheck.checked = pendingPpnToggleState;
@@ -3894,7 +3894,7 @@ window.confirmPpnToggle = function() {
     closeModal('modal-confirm-ppn');
 };
 
-window.cancelPpnToggle = function() {
+window.cancelPpnToggle = function () {
     closeModal('modal-confirm-ppn');
 };
 
@@ -4793,7 +4793,7 @@ async function printInvoice(id) {
         document.getElementById('print-invoice-subtotal').textContent = rp(subtotal).replace('Rp', '').trim();
         document.getElementById('print-invoice-tax').textContent = rp(inv.tax).replace('Rp', '').trim();
         document.getElementById('print-invoice-grand-total').textContent = rp(inv.total).replace('Rp', '').trim();
-        
+
         const taxRow = document.getElementById('print-invoice-tax').closest('tr');
         if (taxRow) {
             taxRow.style.display = currentPpnEnabled ? 'table-row' : 'none';
