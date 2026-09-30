@@ -1954,24 +1954,52 @@ textarea.form-input {
 .mb-3 { margin-bottom: 1.5rem; }
 .gap-1 { gap: 0.5rem; }
 
-/* Print Styles */
+@page {
+  size: 24.13cm 13.97cm;
+  margin: 0.5cm;
+  margin-bottom: 0.8cm;  /* Extra clearance from perforation on LQ-590 continuous form */
+}
+
+/* Print Styles — applies when printing from dashboard.html directly (legacy fallback) */
+/* The standalone invoice-print.html has its own print rules that take precedence. */
 @media print {
-    body * {
-        visibility: hidden;
-    }
-    #print-invoice-view, #print-invoice-view * {
-        visibility: visible;
-    }
-    #print-invoice-view {
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 100%;
+    html, body {
+        width: auto;
+        height: auto;
         margin: 0;
         padding: 0;
+        overflow: visible;
     }
+
+    body > *:not(.dashboard-wrapper) {
+        display: none !important;
+    }
+
+    .sidebar, .topbar, .sidebar-overlay, .modal-overlay, .page-section, .page-toolbar {
+        display: none !important;
+    }
+
+    #print-invoice-view {
+        display: block !important;
+        position: static !important;
+        inset: auto;
+        transform: none;
+        box-sizing: border-box;
+        width: 100% !important;
+        max-width: 100% !important;
+        height: auto !important;
+        padding: 0 !important;
+        margin: 0;
+        overflow: visible !important;
+        box-shadow: none;
+        visibility: visible !important;
+    }
+
+    #print-invoice-view * {
+        visibility: visible;
+    }
+
     .no-print {
         display: none !important;
     }
 }
-

@@ -931,7 +931,7 @@ function renderInvoices(filter = '') {
             <td>${inv.type}</td>
             <td><span class="badge-status ${statusClass}">${capitalize(inv.status || 'Belum Bayar')}</span></td>
             <td style="text-align: right; white-space: nowrap;">
-                <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Print Preview" onclick="printInvoice('${inv.id}')">
+                <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Print Preview" onclick="window.open('/invoice-print.html?id=${encodeURIComponent(inv.id)}', '_blank', 'noopener')">
                     <i data-lucide="printer" style="width: 14px; height: 14px; margin: 0;"></i>
                 </button>
                 <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Edit Invoice" onclick="openEditInvoiceModal('${inv.id}')">
@@ -1007,7 +1007,9 @@ function renderPiutang(filter = '') {
                 <td style="font-weight:700;">${rp(inv.total)}</td>
                 <td>${rp(inv.paid)}</td>
                 <td style="font-weight:700; color: ${sisa > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'}">${rp(sisa)}</td>
-                <td>${inv.dueDate}</td>
+                <td>${inv.dueDate || '-'}</td>
+                <td>${inv.status.toLowerCase().includes('belum') ? '-' : (inv.paidDate || '-')}</td>
+                <td>${inv.status.toLowerCase().includes('belum') ? '-' : (inv.type || '-')}</td>
                 <td><span class="badge-status ${inv.status.toLowerCase().includes('belum') ? 'belum' : inv.status.toLowerCase().replace(/\s+/g, '-')}">${capitalize(inv.status)}</span></td>
                 <td>${inv.status.toLowerCase() !== 'lunas' ? `<button class="btn-toolbar primary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="openPiutangPaymentModal('${inv.id}', ${sisa})">Input Bayar</button>` : '—'}</td>
             </tr>
@@ -1069,7 +1071,9 @@ function renderHutang(filter = '') {
                 <td style="font-weight:700;">${rp(p.total)}</td>
                 <td>${rp(p.paid)}</td>
                 <td style="font-weight:700; color: ${sisa > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'}">${rp(sisa)}</td>
-                <td>${p.date}</td>
+                <td>${p.dueDate || p.date || '-'}</td>
+                <td>${sisa > 0 && parseFloat(p.paid) === 0 ? '-' : (p.paidDate || '-')}</td>
+                <td>${sisa > 0 && parseFloat(p.paid) === 0 ? '-' : (p.type || '-')}</td>
                 <td><span class="badge-status ${st}">${sisa > 0 ? 'Belum Lunas' : 'Lunas'}</span></td>
                 <td>${sisa > 0 ? `<button class="btn-toolbar primary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="openHutangPaymentModal('${p.id}', ${sisa})">Bayar</button>` : '—'}</td>
             </tr>
@@ -1747,6 +1751,12 @@ document.getElementById('btn-checkout')?.addEventListener('click', async () => {
             const result = await res.json();
             const successDesc = document.querySelector('#modal-checkout-success p');
             if (successDesc) successDesc.innerHTML = `Transaksi berhasil.<br>Nomor Invoice: <b>${result.invoiceId}</b>`;
+            
+            const printBtn = document.getElementById('btn-print-new-invoice');
+            if (printBtn) {
+                printBtn.dataset.invoiceId = result.invoiceId;
+            }
+
             openModal('modal-checkout-success');
 
             cart = [];
@@ -2006,7 +2016,8 @@ async function init() {
         fetchCashTransactions(),
         fetchUsers(),
         loadPrefixSettings(),
-        loadInvoicePreferences()
+        loadInvoicePreferences(),
+        loadLandingDemoSetting()
     ]);
 
     // Re-render dashboard with real DB data
@@ -2268,13 +2279,37 @@ async function saveCustomer(isEdit) {
     const id = isEdit ? document.getElementById('edit-customer-id').value : null;
     const prefix = isEdit ? 'edit' : 'add';
 
+    // Ambil nilai semua field
+    const name = document.getElementById(`${prefix}-customer-name`).value.trim();
+    const ktp = document.getElementById(`${prefix}-customer-ktp`)?.value.trim() || '';
+    const email = document.getElementById(`${prefix}-customer-email`)?.value.trim() || '';
+
+    // Validasi frontend
+    if (!name) {
+        showToast('Nama pelanggan wajib diisi!', 'warning');
+        return;
+    }
+    if (ktp && !/^\d{16}$/.test(ktp)) {
+        showToast('Nomor KTP harus 16 digit angka!', 'warning');
+        return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showToast('Format email tidak valid!', 'warning');
+        return;
+    }
+
     const payload = {
-        name: document.getElementById(`${prefix}-customer-name`).value,
+        name,
         customer_category_id: document.getElementById(`${prefix}-customer-type`).value,
         city: document.getElementById(`${prefix}-customer-city`).value,
         address: document.getElementById(`${prefix}-customer-address`)?.value || '',
         phone: document.getElementById(`${prefix}-customer-phone`).value,
-        credit_lmt: document.getElementById(`${prefix}-customer-limit`).value
+        credit_lmt: document.getElementById(`${prefix}-customer-limit`).value,
+        ktp: ktp || null,
+        npwp: document.getElementById(`${prefix}-customer-npwp`)?.value.trim() || null,
+        nib: document.getElementById(`${prefix}-customer-nib`)?.value.trim() || null,
+        email: email || null,
+        no_hp_2: document.getElementById(`${prefix}-customer-no-hp-2`)?.value.trim() || null
     };
 
     const url = isEdit ? `/api/customers/${id}` : '/api/customers';
@@ -2301,7 +2336,7 @@ async function saveCustomer(isEdit) {
 }
 
 function openAddCustomerModal() {
-    const fields = ['name', 'city', 'phone', 'limit'];
+    const fields = ['name', 'city', 'phone', 'limit', 'no-hp-2', 'email', 'ktp', 'npwp', 'nib'];
     fields.forEach(f => {
         const el = document.getElementById(`add-customer-${f}`);
         if (el) el.value = '';
@@ -2325,6 +2360,17 @@ function openEditCustomerModal(id) {
     if (addrEl) addrEl.value = c.address || '';
     document.getElementById('edit-customer-phone').value = c.phone || '';
     document.getElementById('edit-customer-limit').value = c.creditLimit;
+    // Field baru
+    const noHp2El = document.getElementById('edit-customer-no-hp-2');
+    if (noHp2El) noHp2El.value = c.no_hp_2 || '';
+    const emailEl = document.getElementById('edit-customer-email');
+    if (emailEl) emailEl.value = c.email || '';
+    const ktpEl = document.getElementById('edit-customer-ktp');
+    if (ktpEl) ktpEl.value = c.ktp || '';
+    const npwpEl = document.getElementById('edit-customer-npwp');
+    if (npwpEl) npwpEl.value = c.npwp || '';
+    const nibEl = document.getElementById('edit-customer-nib');
+    if (nibEl) nibEl.value = c.nib || '';
     openModal('modal-edit-customer');
 }
 
@@ -2349,6 +2395,18 @@ function openCustomerDetail(id) {
     document.getElementById('detail-customer-city').textContent = c.city || '-';
     document.getElementById('detail-customer-phone').textContent = c.phone || '-';
     document.getElementById('detail-customer-address').textContent = c.address || 'Tidak ada alamat lengkap';
+
+    // Field baru
+    const noHp2El = document.getElementById('detail-customer-no-hp-2');
+    if (noHp2El) noHp2El.textContent = c.no_hp_2 || '-';
+    const emailEl = document.getElementById('detail-customer-email');
+    if (emailEl) emailEl.textContent = c.email || '-';
+    const ktpEl = document.getElementById('detail-customer-ktp');
+    if (ktpEl) ktpEl.textContent = c.ktp || '-';
+    const npwpEl = document.getElementById('detail-customer-npwp');
+    if (npwpEl) npwpEl.textContent = c.npwp || '-';
+    const nibEl = document.getElementById('detail-customer-nib');
+    if (nibEl) nibEl.textContent = c.nib || '-';
 
     const sisa = c.sisaLimitPiutang ?? c.remainingLimit;
     const totalSpent = c.totalBelanja ?? c.totalSpent;
@@ -2545,10 +2603,15 @@ async function fetchPurchases() {
     try {
         const res = await fetch(`/api/purchases?_t=${Date.now()}`, { headers: getAuthHeaders() });
         const data = await res.json();
+        if (!res.ok || data.error) {
+            showToast('Gagal memuat data purchase, coba lagi.', 'error');
+            return;
+        }
         PURCHASES = data;
         renderPurchases();
     } catch (err) {
         console.error('Failed to fetch purchases', err);
+        showToast('Gagal memuat data purchase, coba lagi.', 'error');
     }
 }
 
@@ -2899,6 +2962,10 @@ async function fetchInvoices() {
         // FIX: correct endpoint is /api/invoices not /api/sales; cache buster prevents stale data after checkout
         const res = await fetch(`/api/invoices?_t=${Date.now()}`, { headers: getAuthHeaders() });
         const data = await res.json();
+        if (!res.ok || data.error) {
+            showToast('Gagal memuat data invoice, coba lagi.', 'error');
+            return;
+        }
         INVOICES = data;
         renderInvoices();
         renderPiutang();
@@ -2907,6 +2974,7 @@ async function fetchInvoices() {
         refreshCharts();
     } catch (err) {
         console.error('Failed to fetch invoices', err);
+        showToast('Gagal memuat data invoice, coba lagi.', 'error');
     }
 }
 
@@ -3223,6 +3291,24 @@ async function fetchCashTransactions() {
     }
 }
 
+function openAddCashModal() {
+    // Reset semua field ke kosong/default
+    const today = new Date().toISOString().split('T')[0];
+    const typeEl = document.getElementById('add-cash-type');
+    if (typeEl) typeEl.value = 'IN';
+    const dateEl = document.getElementById('add-cash-date');
+    if (dateEl) dateEl.value = today;
+    const descEl = document.getElementById('add-cash-desc');
+    if (descEl) descEl.value = '';
+    const amountEl = document.getElementById('add-cash-amount');
+    if (amountEl) amountEl.value = '';
+    const methodEl = document.getElementById('add-cash-method');
+    if (methodEl) methodEl.selectedIndex = 0;
+    const catEl = document.getElementById('add-cash-category');
+    if (catEl) catEl.selectedIndex = 0;
+    openModal('modal-add-cash');
+}
+
 async function saveCashTransaction() {
     const type = document.getElementById('add-cash-type').value;
     const category = document.getElementById('add-cash-category').value;
@@ -3363,6 +3449,7 @@ async function submitPayment() {
         ? `/api/finance/receivables/${encodeURIComponent(id)}/pay`
         : `/api/finance/payables/${encodeURIComponent(id)}/pay`;
 
+    let paymentSuccess = false;
     try {
         const res = await fetch(url, {
             method: 'POST',
@@ -3370,17 +3457,9 @@ async function submitPayment() {
             body: JSON.stringify({ amount: parseFloat(amount), payment_type_id: method })
         });
         if (res.ok) {
+            paymentSuccess = true;
             closeModal('modal-payment');
             showToast('Pembayaran berhasil dicatat!', 'success');
-            if (isReceivable) {
-                await fetchInvoices();
-                renderPiutang();
-            } else {
-                await fetchPurchases();
-                renderHutang();
-            }
-            await fetchCashTransactions();
-            await fetchVendors();
         } else {
             let errMsg = 'Gagal memproses pembayaran';
             try {
@@ -3395,7 +3474,25 @@ async function submitPayment() {
         }
     } catch (err) {
         console.error(err);
-        showToast('Gagal menghubungi server', 'error');
+        showToast('Gagal mengirim data pembayaran ke server', 'error');
+        return;
+    }
+
+    if (paymentSuccess) {
+        try {
+            if (isReceivable) {
+                await fetchInvoices();
+                renderPiutang();
+            } else {
+                await fetchPurchases();
+                renderHutang();
+            }
+            await fetchCashTransactions();
+            await fetchVendors();
+        } catch (err) {
+            console.error('Refresh data error', err);
+            showToast('Pembayaran sukses, tapi gagal me-refresh tampilan tabel', 'warning');
+        }
     }
 }
 
@@ -3853,6 +3950,66 @@ async function loadInvoicePreferences() {
     }
 }
 
+// --- Landing Demo Setting ---
+
+function syncLandingToggleUI(isOn) {
+    const track = document.getElementById('landing-toggle-track');
+    const thumb = document.getElementById('landing-toggle-thumb');
+    const checkbox = document.getElementById('settings-tampilkan-landing');
+    if (!track || !thumb || !checkbox) return;
+    checkbox.checked = isOn;
+    track.style.background = isOn ? 'var(--blue-500, #3b82f6)' : 'var(--gray-300)';
+    thumb.style.transform = isOn ? 'translateX(20px)' : 'translateX(0)';
+}
+
+async function loadLandingDemoSetting() {
+    // Card hanya ditampilkan untuk admin
+    const isAdmin = (localStorage.getItem('role') || '').toLowerCase() === 'admin';
+    const card = document.getElementById('settings-card-landing-demo');
+    if (card) card.style.display = isAdmin ? '' : 'none';
+    if (!isAdmin) return;
+
+    try {
+        const res = await fetch('/api/public/landing-status');
+        if (res.ok) {
+            const data = await res.json();
+            syncLandingToggleUI(data.tampilkan_landing_demo !== false);
+        }
+    } catch (err) {
+        console.error('Failed to load landing demo setting', err);
+    }
+}
+
+window.saveLandingDemoSetting = async function(value) {
+    syncLandingToggleUI(value);
+    try {
+        const res = await fetch('/api/pengaturan/landing-demo', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ tampilkan_landing_demo: Boolean(value) })
+        });
+        if (res.ok) {
+            showToast(
+                value
+                    ? 'Landing page demo diaktifkan.'
+                    : 'Landing page demo dinonaktifkan. Pengunjung akan diarahkan ke halaman login.',
+                'success'
+            );
+        } else {
+            const err = await res.json();
+            showToast('Gagal menyimpan: ' + (err.error || 'Terjadi kesalahan'), 'error');
+            // revert UI on failure
+            syncLandingToggleUI(!value);
+            const checkbox = document.getElementById('settings-tampilkan-landing');
+            if (checkbox) checkbox.checked = !value;
+        }
+    } catch (err) {
+        console.error(err);
+        showToast('Gagal menghubungi server', 'error');
+        syncLandingToggleUI(!value);
+    }
+};
+
 async function saveInvoicePreferences() {
     const payload = {
         ppn_enabled: document.getElementById('settings-ppn-enabled')?.checked ? 'true' : 'false',
@@ -3969,8 +4126,7 @@ async function saveManualInvoice() {
         date: document.getElementById('manual-invoice-date').value,
         due_date: document.getElementById('manual-invoice-duedate').value,
         total: parseFloat(document.getElementById('manual-invoice-total').value) || 0,
-        payment_type_id: document.getElementById('manual-invoice-payment-type').value,
-        payment_method: null
+        payment_type_id: document.getElementById('manual-invoice-payment-type').value
     };
 
     if (!payload.id || !payload.customer_id || !payload.total) {
@@ -4215,10 +4371,10 @@ function downloadImportTemplate() {
     let filename = "";
 
     if (currentImportSection === 'produk') {
-        headers = ["SKU", "Nama Produk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
+        headers = ["SKU", "Nama Produk", "Brand/Merk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
         rows = [
-            ["MNM-001", "Kopi Arabica 250g", "Minuman", 45000, 68000, 100, 20, "pcs"],
-            ["MKN-001", "Mie Instan (dus)", "Makanan", 92000, 115000, 50, 10, "dus"]
+            ["MNM-001", "Kopi Arabica 250g", "", "Minuman", 45000, 68000, 100, 20, "pcs"],
+            ["MKN-001", "Mie Instan (dus)", "Indomie", "Makanan", 92000, 115000, 50, 10, "dus"]
         ];
         filename = "sample_produk.xlsx";
     } else if (currentImportSection === 'pelanggan') {
@@ -4340,8 +4496,9 @@ async function executeImport(rows) {
 
             try {
                 if (currentImportSection === 'produk') {
-                    const sku = row['SKU'] || '';
+                    const sku = row['SKU'] ? String(row['SKU']).trim() : '';
                     const name = row['Nama Produk'] || '';
+                    const brand = row['Brand/Merk'] !== undefined ? String(row['Brand/Merk']).trim() : '';
                     const catName = row['Kategori'] || '';
                     const cost = parseFloat(row['Harga Beli']) || 0;
                     const price = parseFloat(row['Harga Jual']) || 0;
@@ -4350,6 +4507,7 @@ async function executeImport(rows) {
                     const unitName = row['Satuan'] || '';
 
                     if (!name) throw new Error("Nama produk kosong");
+                    if (brand.length > 255) throw new Error("Brand/Merk maksimal 255 karakter");
 
                     // Dynamic Category Creation
                     let category_id = categoriesMap[catName.toLowerCase().trim()];
@@ -4381,16 +4539,22 @@ async function executeImport(rows) {
                         }
                     }
 
-                    const postRes = await fetch('/api/products', {
-                        method: 'POST',
+                    const existingProd = sku ? PRODUCTS.find(p => p.sku === sku) : null;
+                    const method = existingProd ? 'PUT' : 'POST';
+                    const endpoint = existingProd ? `/api/products/${existingProd.id}` : '/api/products';
+
+                    const payload = {
+                        sku, brand, name, category_id, cost_price: cost, sell_price: price, stock, min_stock: minStock, unit_id
+                    };
+
+                    const postRes = await fetch(endpoint, {
+                        method: method,
                         headers: getAuthHeaders(),
-                        body: JSON.stringify({
-                            sku, name, category_id, cost_price: cost, sell_price: price, stock, min_stock: minStock, unit_id
-                        })
+                        body: JSON.stringify(payload)
                     });
                     if (!postRes.ok) {
                         const err = await postRes.json();
-                        throw new Error(err.error || "Gagal menyimpan produk");
+                        throw new Error(err.error || (existingProd ? "Gagal memperbarui produk" : "Gagal menyimpan produk"));
                     }
 
                 } else if (currentImportSection === 'pelanggan') {
@@ -4594,10 +4758,11 @@ function exportSection(section) {
     let filename = "";
 
     if (section === 'produk') {
-        headers = ["SKU", "Nama Produk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
+        headers = ["SKU", "Nama Produk", "Brand/Merk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
         rows = PRODUCTS.map(p => [
             p.sku || '',
             p.name || '',
+            p.brand || '',
             p.category || '',
             p.cost || 0,
             p.price || 0,
@@ -4735,91 +4900,27 @@ async function saveCompanyProfile(e) {
     }
 }
 
-async function printInvoice(id) {
-    try {
-        showToast('Menyiapkan invoice untuk dicetak...', 'info');
-        const res = await fetch(`/api/invoices/${encodeURIComponent(id)}/print-data`, { headers: getAuthHeaders() });
-        if (!res.ok) throw new Error('Failed to load print data');
-        const data = await res.json();
 
-        // Populate Company
-        const comp = data.company;
-        document.getElementById('print-company-name').textContent = comp.name || 'Nama Bisnis';
-        document.getElementById('print-company-address').textContent = comp.address || '-';
-        document.getElementById('print-company-email').textContent = comp.email || '-';
-        document.getElementById('print-company-phone').textContent = comp.phone || '-';
+// Opens invoice print preview in a new tab.
+// Must be called synchronously in a click handler to avoid popup blocker.
+function printInvoice(id) {
+    window.open(`/invoice-print.html?id=${encodeURIComponent(id)}`, '_blank', 'noopener');
 
-        if (comp.logo) {
-            document.getElementById('print-company-logo').src = comp.logo;
-            document.getElementById('print-company-logo').style.display = 'block';
-        } else {
-            document.getElementById('print-company-logo').style.display = 'none';
-        }
-
-        // Populate Customer
-        document.getElementById('print-customer-name').textContent = data.customer.name;
-        document.getElementById('print-customer-address').textContent = data.customer.address || '-';
-
-        // Populate Invoice
-        const inv = data.invoice;
-        document.getElementById('print-invoice-id').textContent = inv.id;
-        // Format dates to DD/MM/YYYY
-        const formatDate = (ds) => {
-            if (!ds) return '-';
-            const p = ds.split('-');
-            if (p.length < 3) return ds;
-            return `${p[2]}/${p[1]}/${p[0]}`;
-        };
-        document.getElementById('print-invoice-date').textContent = formatDate(inv.date);
-
-        const trDueDate = document.getElementById('print-row-due-date');
-        if (inv.payment_type_name && inv.payment_type_name.toLowerCase().includes('tempo')) {
-            document.getElementById('print-invoice-due-date').textContent = formatDate(inv.due_date);
-            trDueDate.style.display = 'table-row';
-        } else {
-            trDueDate.style.display = 'none';
-        }
-
-        document.getElementById('print-invoice-payment-type').textContent = inv.payment_type_name;
-
-        // Items
-        const tbody = document.getElementById('print-invoice-items');
-        tbody.innerHTML = data.items.map((it, idx) => `
-            <tr>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: center;">${idx + 1}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem;">${it.product_name}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: center;">${it.unit_name}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: center;">${it.quantity}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: right;">${rp(it.price).replace('Rp', '').trim()}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: right;">${rp(it.total).replace('Rp', '').trim()}</td>
-            </tr>
-        `).join('');
-
-        // Totals
-        const subtotal = inv.subtotal; // Use real subtotal from API
-        document.getElementById('print-invoice-subtotal').textContent = rp(subtotal).replace('Rp', '').trim();
-        document.getElementById('print-invoice-tax').textContent = rp(inv.tax).replace('Rp', '').trim();
-        document.getElementById('print-invoice-grand-total').textContent = rp(inv.total).replace('Rp', '').trim();
-        
-        const taxRow = document.getElementById('print-invoice-tax').closest('tr');
-        if (taxRow) {
-            taxRow.style.display = currentPpnEnabled ? 'table-row' : 'none';
-        }
-
-        // Show view
-        document.getElementById('print-invoice-view').style.display = 'block';
-        document.body.style.overflow = 'hidden'; // prevent background scroll
-
-    } catch (err) {
-        console.error(err);
-        showToast('Gagal menyiapkan print', 'error');
-    }
 }
 
 function closePrintInvoiceView() {
     document.getElementById('print-invoice-view').style.display = 'none';
     document.body.style.overflow = 'auto';
 }
+
+window.printNewlyCreatedInvoice = function() {
+    const printBtn = document.getElementById('btn-print-new-invoice');
+    if (printBtn && printBtn.dataset.invoiceId) {
+        // Open in new tab synchronously (must be in click handler to avoid popup blocker).
+        // Modal stays open so user can still click "Selesai".
+        window.open(`/invoice-print.html?id=${encodeURIComponent(printBtn.dataset.invoiceId)}`, '_blank', 'noopener');
+    }
+};
 
 // ---------- Customer Fee Report (Admin Only) ----------
 async function renderCustomerFeeReport() {

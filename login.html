@@ -157,10 +157,26 @@
                 Masuk <i data-lucide="log-in" style="width: 18px; height: 18px;"></i>
             </button>
         </form>
+
     </div>
 
     <script>
         lucide.createIcons();
+
+        // Tampilkan/sembunyikan hint Demo Account sesuai setting landing demo
+        (async () => {
+            try {
+                const res = await fetch('/api/public/landing-status');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.tampilkan_landing_demo !== false) {
+                        document.getElementById('demo-hint').style.display = 'block';
+                    }
+                }
+            } catch (_) {
+                // Jika endpoint gagal (offline/etc), sembunyikan hint — fail safe
+            }
+        })();
 
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();

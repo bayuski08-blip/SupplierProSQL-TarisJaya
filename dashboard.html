@@ -648,6 +648,8 @@
                                     <th>Dibayar</th>
                                     <th>Sisa</th>
                                     <th>Jatuh Tempo</th>
+                                    <th>Tgl Lunas</th>
+                                    <th>Tipe Pembayaran</th>
                                     <th>Status</th>
                                     <th>Aksi</th>
                                 </tr>
@@ -693,6 +695,8 @@
                                     <th>Dibayar</th>
                                     <th>Sisa</th>
                                     <th>Jatuh Tempo</th>
+                                    <th>Tgl Lunas</th>
+                                    <th>Tipe Pembayaran</th>
                                     <th>Status</th>
                                     <th>Aksi</th>
                                 </tr>
@@ -721,7 +725,7 @@
                             </div>
                         </div>
                         <div class="page-toolbar-right">
-                            <button class="btn-toolbar primary" onclick="openModal('modal-add-cash')">
+                            <button class="btn-toolbar primary" onclick="openAddCashModal()">
                                 <i data-lucide="plus"></i> Catat Transaksi
                             </button>
                         </div>
@@ -1087,6 +1091,41 @@
                                 <button class="btn-toolbar primary" onclick="savePrefixSettings()">
                                     <i data-lucide="save"></i> Simpan Prefix
                                 </button>
+                            </div>
+                        </div>
+
+                        <!-- Halaman Landing Demo -->
+                        <div class="settings-card" id="settings-card-landing-demo">
+                            <div class="settings-card-header">
+                                <i data-lucide="monitor"></i>
+                                <h3>Halaman Landing Demo</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 12px; cursor: pointer;">
+                                        <div style="position:relative; display:inline-block; width:44px; height:24px; flex-shrink:0;">
+                                            <input type="checkbox" id="settings-tampilkan-landing"
+                                                onchange="saveLandingDemoSetting(this.checked)"
+                                                style="opacity:0; width:0; height:0; position:absolute;">
+                                            <span id="landing-toggle-track" style="
+                                                position:absolute; inset:0; border-radius:9999px;
+                                                background:var(--gray-300); cursor:pointer;
+                                                transition:background 0.2s;
+                                            "></span>
+                                            <span id="landing-toggle-thumb" style="
+                                                position:absolute; top:3px; left:3px;
+                                                width:18px; height:18px; border-radius:50%;
+                                                background:white; cursor:pointer;
+                                                transition:transform 0.2s;
+                                                box-shadow:0 1px 3px rgba(0,0,0,0.3);
+                                            "></span>
+                                        </div>
+                                        <span style="font-weight:500; color:var(--gray-700);">Tampilkan halaman landing page demo</span>
+                                    </label>
+                                    <p class="help-text" style="font-size:0.82rem; color:var(--gray-500); margin-top:0.5rem;">
+                                        Jika dimatikan, pengunjung yang membuka alamat utama akan langsung diarahkan ke halaman login.
+                                    </p>
+                                </div>
                             </div>
                         </div>
 
@@ -1614,6 +1653,30 @@
                         <input type="number" id="add-customer-limit" class="form-input" placeholder="5000000">
                     </div>
                 </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>No. HP Kedua <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <input type="text" id="add-customer-no-hp-2" class="form-input" placeholder="08xx-xxxx-xxxx">
+                    </div>
+                    <div class="form-group">
+                        <label>Email <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <input type="email" id="add-customer-email" class="form-input" placeholder="email@contoh.com">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>No. KTP <span style="color:var(--gray-400);font-size:0.75rem;">(16 digit, opsional)</span></label>
+                        <input type="text" id="add-customer-ktp" class="form-input" placeholder="16 digit NIK" maxlength="16" inputmode="numeric">
+                    </div>
+                    <div class="form-group">
+                        <label>NPWP <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <input type="text" id="add-customer-npwp" class="form-input" placeholder="XX.XXX.XXX.X-XXX.XXX">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>NIB <span style="color:var(--gray-400);font-size:0.75rem;">(Nomor Induk Berusaha, opsional)</span></label>
+                    <input type="text" id="add-customer-nib" class="form-input" placeholder="13 digit NIB" maxlength="20" inputmode="numeric">
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-add-customer')">Batal</button>
@@ -1669,6 +1732,30 @@
                         <input type="number" id="edit-customer-limit" class="form-input">
                     </div>
                 </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>No. HP Kedua <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <input type="text" id="edit-customer-no-hp-2" class="form-input" placeholder="08xx-xxxx-xxxx">
+                    </div>
+                    <div class="form-group">
+                        <label>Email <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <input type="email" id="edit-customer-email" class="form-input" placeholder="email@contoh.com">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>No. KTP <span style="color:var(--gray-400);font-size:0.75rem;">(16 digit, opsional)</span></label>
+                        <input type="text" id="edit-customer-ktp" class="form-input" placeholder="16 digit NIK" maxlength="16" inputmode="numeric">
+                    </div>
+                    <div class="form-group">
+                        <label>NPWP <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <input type="text" id="edit-customer-npwp" class="form-input" placeholder="XX.XXX.XXX.X-XXX.XXX">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>NIB <span style="color:var(--gray-400);font-size:0.75rem;">(Nomor Induk Berusaha, opsional)</span></label>
+                    <input type="text" id="edit-customer-nib" class="form-input" placeholder="13 digit NIB" maxlength="20" inputmode="numeric">
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-edit-customer')">Batal</button>
@@ -1715,6 +1802,31 @@
                         style="display: flex; justify-content: space-between; font-size: 0.875rem;">
                         <span class="entity-detail-label" style="color: var(--gray-500);">Telepon / WA</span>
                         <span class="entity-detail-value" id="detail-customer-phone"></span>
+                    </div>
+                    <div class="entity-detail"
+                        style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+                        <span class="entity-detail-label" style="color: var(--gray-500);">No. HP Kedua</span>
+                        <span class="entity-detail-value" id="detail-customer-no-hp-2"></span>
+                    </div>
+                    <div class="entity-detail"
+                        style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+                        <span class="entity-detail-label" style="color: var(--gray-500);">Email</span>
+                        <span class="entity-detail-value" id="detail-customer-email"></span>
+                    </div>
+                    <div class="entity-detail"
+                        style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+                        <span class="entity-detail-label" style="color: var(--gray-500);">No. KTP</span>
+                        <span class="entity-detail-value" id="detail-customer-ktp"></span>
+                    </div>
+                    <div class="entity-detail"
+                        style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+                        <span class="entity-detail-label" style="color: var(--gray-500);">NPWP</span>
+                        <span class="entity-detail-value" id="detail-customer-npwp"></span>
+                    </div>
+                    <div class="entity-detail"
+                        style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+                        <span class="entity-detail-label" style="color: var(--gray-500);">NIB</span>
+                        <span class="entity-detail-value" id="detail-customer-nib"></span>
                     </div>
                     <div class="entity-detail"
                         style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.875rem;">
@@ -2527,7 +2639,7 @@
                 </div>
                 <div style="display: flex; gap: 0.5rem; align-items: center;">
                     <button class="btn-toolbar secondary"
-                        onclick="closeModal('modal-edit-invoice'); printInvoice(document.getElementById('edit-invoice-id').value)">
+                        onclick="window.open('/invoice-print.html?id=' + encodeURIComponent(document.getElementById('edit-invoice-id').value), '_blank', 'noopener')">
                         <i data-lucide="printer"></i> Print
                     </button>
                     <button class="btn-toolbar secondary" onclick="closeModal('modal-edit-invoice')">Discard</button>
@@ -2598,12 +2710,12 @@
                 <div style="font-size: 3.5rem; margin-bottom: 1rem;" class="success-checkmark">🎉</div>
                 <p style="font-size: 1.1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem;">Invoice
                     berhasil dibuat</p>
-                <p style="font-size: 0.88rem; color: var(--gray-500);">Invoice INV-2026-0042 telah dicatat. Stok produk
-                    telah diperbarui secara otomatis.</p>
+                <p style="font-size: 0.88rem; color: var(--gray-500);">Stok produk telah diperbarui secara otomatis.</p>
             </div>
-            <div class="modal-footer" style="justify-content: center;">
+            <div class="modal-footer" style="justify-content: center; gap: 1rem;">
                 <button class="btn-toolbar primary" onclick="closeModal('modal-checkout-success')"><i
                         data-lucide="check"></i> Selesai</button>
+                <button class="btn-toolbar secondary" onclick="printNewlyCreatedInvoice()" id="btn-print-new-invoice"><i data-lucide="printer"></i> Cetak Invoice</button>
             </div>
         </div>
     </div>
@@ -2817,9 +2929,9 @@
     </div>
 
     <!-- Printable Invoice Page (Hidden by default, shown via JS) -->
-    <div id="print-invoice-view"
+    <div id="print-invoice-view" class="invoice-container"
         style="display: none; background: white; width: 100%; min-height: 100vh; position: fixed; top: 0; left: 0; z-index: 99999; padding: 2rem; box-sizing: border-box; overflow-y: auto;">
-        <div style="max-width: 800px; margin: 0 auto; background: white;">
+        <div style="max-width: 800px; margin: 0 auto; background: white; height: 100%;">
             <!-- Actions (Not printed) -->
             <div class="no-print" style="display: flex; justify-content: flex-end; gap: 1rem; margin-bottom: 2rem;">
                 <button class="btn-toolbar secondary" onclick="closePrintInvoiceView()">Tutup</button>
@@ -2828,70 +2940,56 @@
             </div>
 
             <!-- Invoice Header -->
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
-                <div style="flex: 0 0 30%; text-align: center;">
-                    <img id="print-company-logo" src=""
-                        style="max-height: 140px; max-width: 100%; display: none; margin: 0 auto;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 0.5rem;">
+                <!-- Kiri: Logo -->
+                <div style="flex: 0 0 15%; text-align: center;">
+                    <img id="print-company-logo" src="" style="max-height: 100px; max-width: 100%; display: none; margin: 0 auto;">
                 </div>
-                <div style="flex: 0 0 65%; color: #000; font-size: 0.875rem; line-height: 1.6;">
-                    <h2 id="print-company-name"
-                        style="margin: 0 0 0.25rem 0; font-size: 1.25rem; color: #000; font-weight: bold;"></h2>
-                    <table style="font-size: 0.875rem; border: none; border-collapse: collapse; margin-bottom: 0.5rem;">
+                <!-- Tengah: Vinz Media & Alamat -->
+                <div style="flex: 0 0 45%; color: #000; font-size: 9pt; line-height: 1.2;">
+                    <h2 id="print-company-name" style="margin: 0 0 0.5rem 0; font-size: 3.25rem; color: #000; font-weight: bold;"></h2>
+                    <table style="font-size: 9pt; border: none; border-collapse: collapse; margin-bottom: 0;">
                         <tr>
-                            <td
-                                style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap; vertical-align: top;">
-                                Alamat</td>
-                            <td style="vertical-align: top; padding: 0.1rem 0;">: <span
-                                    id="print-company-address"></span></td>
+                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap; vertical-align: top;">Alamat</td>
+                            <td style="vertical-align: top; padding: 0.1rem 0;">: <span id="print-company-address"></span></td>
                         </tr>
                         <tr>
-                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap;">Email
-                            </td>
+                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap;">Email</td>
                             <td style="padding: 0.1rem 0;">: <span id="print-company-email"></span></td>
                         </tr>
                         <tr>
-                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap;">Tlp
-                            </td>
+                            <td style="font-weight: bold; padding: 0.1rem 0.5rem 0.1rem 0; white-space: nowrap;">Tlp</td>
                             <td style="padding: 0.1rem 0;">: <span id="print-company-phone"></span></td>
                         </tr>
                     </table>
+                </div>
+                <!-- Kanan: Customer -->
+                <div style="flex: 0 0 40%; color: #000; font-size: 9pt; line-height: 1.2; padding-top: 0.5rem;">
+                    <table style="font-size: 9pt; border: none; width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="font-weight: bold; padding: 0.15rem 0; width: 110px;">Nama Customer</td>
+                            <td style="padding: 0.15rem 0;">: <span style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;" id="print-customer-name"></span></td>
+                        </tr>
+                        <tr>
 
-                    <table style="font-size: 0.875rem; border: none; width: 100%; border-collapse: collapse;">
-                        <tr>
-                            <td style="font-weight: bold; padding: 0.25rem 0; width: 130px;">Nama Customer</td>
-                            <td style="padding: 0.25rem 0;">: <span
-                                    style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;"
-                                    id="print-customer-name"></span></td>
+                            <td style="font-weight: bold; padding: 0.15rem 0;">Alamat Customer</td>
+                            <td style="padding: 0.15rem 0;">: <span style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;" id="print-customer-address"></span></td>
                         </tr>
                         <tr>
-                            <td style="font-weight: bold; padding: 0.25rem 0;">Alamat Customer</td>
-                            <td style="padding: 0.25rem 0;">: <span
-                                    style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;"
-                                    id="print-customer-address"></span></td>
+                            <td style="font-weight: bold; padding: 0.15rem 0;">Tanggal</td>
+                            <td style="padding: 0.15rem 0;">: <span style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;" id="print-invoice-date"></span></td>
                         </tr>
                         <tr>
-                            <td style="font-weight: bold; padding: 0.25rem 0;">Tanggal</td>
-                            <td style="padding: 0.25rem 0;">: <span
-                                    style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;"
-                                    id="print-invoice-date"></span></td>
-                        </tr>
-                        <tr>
-                            <td style="font-weight: bold; padding: 0.25rem 0;">No. Invoice</td>
-                            <td style="padding: 0.25rem 0;">: <span
-                                    style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;"
-                                    id="print-invoice-id"></span></td>
+                            <td style="font-weight: bold; padding: 0.15rem 0;">No. Invoice</td>
+                            <td style="padding: 0.15rem 0;">: <span style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;" id="print-invoice-id"></span></td>
                         </tr>
                         <tr id="print-row-due-date">
-                            <td style="font-weight: bold; padding: 0.25rem 0;">Jatuh Tempo</td>
-                            <td style="padding: 0.25rem 0;">: <span
-                                    style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;"
-                                    id="print-invoice-due-date"></span></td>
+                            <td style="font-weight: bold; padding: 0.15rem 0;">Jatuh Tempo</td>
+                            <td style="padding: 0.15rem 0;">: <span style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;" id="print-invoice-due-date"></span></td>
                         </tr>
                         <tr>
-                            <td style="font-weight: bold; padding: 0.25rem 0;">Payment</td>
-                            <td style="padding: 0.25rem 0;">: <span
-                                    style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;"
-                                    id="print-invoice-payment-type"></span></td>
+                            <td style="font-weight: bold; padding: 0.15rem 0;">Payment</td>
+                            <td style="padding: 0.15rem 0;">: <span style="display: inline-block; width: calc(100% - 15px); border-bottom: 1px solid #000; min-height: 1rem;" id="print-invoice-payment-type"></span></td>
                         </tr>
                     </table>
                 </div>
@@ -2899,7 +2997,7 @@
 
             <!-- Items Table -->
             <table
-                style="width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.875rem; color: #000;">
+                style="width: 100%; border-collapse: collapse; margin-bottom: 0.5rem; font-size: 0.875rem; color: #000;">
                 <thead>
                     <tr>
                         <th style="border: 1px solid #000; padding: 0.5rem; text-align: center; width: 50px;">No.</th>
@@ -2918,17 +3016,17 @@
             <!-- Footer area -->
             <div style="display: flex; justify-content: space-between; align-items: flex-start; color: #000;">
                 <!-- Signatures -->
-                <div style="display: flex; gap: 3rem; margin-top: 2rem; font-size: 0.875rem;">
+                <div style="display: flex; gap: 3rem; margin-top: 0.5rem; font-size: 0.875rem;">
                     <div style="text-align: center;">
-                        <div style="margin-bottom: 4rem;">Regards,</div>
+                        <div style="margin-bottom: 3rem;">Regards,</div>
                         <div>(__________________)</div>
                     </div>
                     <div style="text-align: center;">
-                        <div style="margin-bottom: 4rem;">Driver,</div>
+                        <div style="margin-bottom: 3rem;">Driver,</div>
                         <div>(__________________)</div>
                     </div>
                     <div style="text-align: center;">
-                        <div style="margin-bottom: 4rem;">Customer,</div>
+                        <div style="margin-bottom: 3rem;">Customer,</div>
                         <div>(__________________)</div>
                     </div>
                 </div>
