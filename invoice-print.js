@@ -83,14 +83,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         const data = await res.json();
         
-        let currentPpnEnabled = true;
-        try {
-            const settingsRes = await fetch('/api/settings', { headers: getAuthHeaders() });
-            if (settingsRes.ok) {
-                const settingsData = await settingsRes.json();
-                currentPpnEnabled = settingsData.ppn_enabled;
-            }
-        } catch(e) {}
+        // PPN status: prefer field from print-data API (same source as tax calculation),
+        // fall back to /api/settings for backward compatibility.
+        // Logic: show TAX row only when ppn_enabled is true in current settings.
+        // Backend already recalculates tax = 0 when PPN is off, so the two stay in sync.
+        let ppnEnabled = (data.invoice.ppn_enabled === true || data.invoice.ppn_enabled === 'true');
+        // If backend does not yet include ppn_enabled, fall back to /api/settings
+        if (data.invoice.ppn_enabled === undefined) {
+            try {
+                const settingsRes = await fetch('/api/settings', { headers: getAuthHeaders() });
+                if (settingsRes.ok) {
+                    const settingsData = await settingsRes.json();
+                    ppnEnabled = settingsData.ppn_enabled !== 'false' && settingsData.ppn_enabled !== false;
+                }
+            } catch(e) {}
+        }
 
         // Populate Company
         const comp = data.company;
@@ -136,24 +143,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         const tbody = document.getElementById('print-invoice-items');
         tbody.innerHTML = data.items.map((it, idx) => `
             <tr>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: center;">${idx + 1}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem;">${it.product_name}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: center;">${it.unit_name}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: center;">${it.quantity}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: right;">${rp(it.price).replace('Rp', '').trim()}</td>
-                <td style="border: 1px solid #000; padding: 0.5rem; text-align: right;">${rp(it.total).replace('Rp', '').trim()}</td>
+                <td style="text-align: center;">${idx + 1}</td>
+                <td style="text-align: left;">${it.product_name}</td>
+                <td style="text-align: center;">${it.unit_name}</td>
+                <td style="text-align: center;">${it.quantity}</td>
+                <td style="text-align: right;">${rp(it.price).replace('Rp', '').trim()}</td>
+                <td style="text-align: right;">${rp(it.total).replace('Rp', '').trim()}</td>
             </tr>
         `).join('');
 
         // Totals
         const subtotal = inv.subtotal; // Use real subtotal from API
         document.getElementById('print-invoice-subtotal').textContent = rp(subtotal).replace('Rp', '').trim();
-        document.getElementById('print-invoice-tax').textContent = rp(inv.tax).replace('Rp', '').trim();
         document.getElementById('print-invoice-grand-total').textContent = rp(inv.total).replace('Rp', '').trim();
-        
+
+        // TAX row: remove from DOM when PPN is disabled so no empty row or zero is shown.
+        // The separator line (border-top on GRAND TOTAL row) remains, keeping the totals block tidy.
         const taxRow = document.getElementById('print-invoice-tax').closest('tr');
-        if (taxRow) {
-            taxRow.style.display = currentPpnEnabled ? 'table-row' : 'none';
+        if (ppnEnabled) {
+            document.getElementById('print-invoice-tax').textContent = rp(inv.tax).replace('Rp', '').trim();
+            if (taxRow) taxRow.style.display = '';  // ensure visible (default)
+        } else {
+            if (taxRow) taxRow.remove();  // fully remove from DOM — not just hidden
         }
 
     } catch (err) {

@@ -20,7 +20,7 @@ function showToast(message, type = 'success') {
     }
     const toast = document.createElement('div');
     const colors = { success: '#10b981', error: '#ef4444', warning: '#f59e0b', info: '#3b82f6' };
-    const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
+    const icons = { success: '✓', error: '✕', warning: '⚠️', info: 'ℹ️' };
     toast.style.cssText = `background:${colors[type] || colors.success};color:white;padding:0.75rem 1.25rem;border-radius:0.75rem;font-size:0.875rem;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,0.15);display:flex;align-items:center;gap:0.5rem;min-width:200px;max-width:360px;transform:translateX(120%);transition:transform 0.3s ease;`;
     toast.innerHTML = `<span style="font-size:1rem;">${icons[type]}</span><span>${message}</span>`;
     container.appendChild(toast);
@@ -78,6 +78,118 @@ function rpShort(n) {
     return rp(n);
 }
 
+// ---------- Pagination & State ----------
+const PAGE_SIZE = 80;
+
+const paginationState = {
+    products: { page: 1, total: 0, totalPages: 1 },
+    customers: { page: 1, total: 0, totalPages: 1 },
+    vendors: { page: 1, total: 0, totalPages: 1 },
+    purchases: { page: 1, total: 0, totalPages: 1 },
+    invoices: { page: 1, total: 0, totalPages: 1 },
+    piutang: { page: 1, total: 0, totalPages: 1 },
+    hutang: { page: 1, total: 0, totalPages: 1 },
+    cashflow: { page: 1, total: 0, totalPages: 1 }
+};
+
+let ALL_PRODUCTS = [];
+let ALL_CUSTOMERS = [];
+let ALL_VENDORS = [];
+let PIUTANG_LIST = [];
+let HUTANG_LIST = [];
+let currentCashFlowFilter = 'all';
+
+/**
+ * Reusable Pagination Renderer (Vanilla JS)
+ */
+function renderPagination({ containerId, currentPage, totalItems, pageSize = PAGE_SIZE, onPageChange }) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (!totalItems || totalItems <= pageSize) {
+        container.innerHTML = '';
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'flex';
+    const totalPages = Math.ceil(totalItems / pageSize) || 1;
+    const startItem = (currentPage - 1) * pageSize + 1;
+    const endItem = Math.min(currentPage * pageSize, totalItems);
+
+    const pages = [];
+    if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+        pages.push(1);
+        if (currentPage > 3) pages.push('...');
+        const start = Math.max(2, currentPage - 1);
+        const end = Math.min(totalPages - 1, currentPage + 1);
+        for (let i = start; i <= end; i++) {
+            if (!pages.includes(i)) pages.push(i);
+        }
+        if (currentPage < totalPages - 2) pages.push('...');
+        if (!pages.includes(totalPages)) pages.push(totalPages);
+    }
+
+    const pageButtonsHtml = pages.map(p => {
+        if (p === '...') {
+            return '<span class="pagination-ellipsis">&hellip;</span>';
+        }
+        const isActive = p === currentPage;
+        return '<button type="button" class="pagination-btn ' + (isActive ? 'active' : '') + '" data-page="' + p + '">' + p + '</button>';
+    }).join('');
+
+    container.innerHTML = 
+        '<div class="pagination-wrapper">' +
+            '<div class="pagination-info">' +
+                'Menampilkan <b>' + startItem + '–' + endItem + '</b> dari <b>' + totalItems + '</b> data' +
+            '</div>' +
+            '<div class="pagination-controls">' +
+                '<button type="button" class="pagination-btn pagination-prev" ' + (currentPage <= 1 ? 'disabled' : '') + '>' +
+                    '&laquo; Sebelumnya' +
+                '</button>' +
+                '<div class="pagination-pages desktop-only">' +
+                    pageButtonsHtml +
+                '</div>' +
+                '<div class="pagination-mobile-info mobile-only">' +
+                    'Hal. ' + currentPage + ' dari ' + totalPages +
+                '</div>' +
+                '<button type="button" class="pagination-btn pagination-next" ' + (currentPage >= totalPages ? 'disabled' : '') + '>' +
+                    'Berikutnya &raquo;' +
+                '</button>' +
+            '</div>' +
+        '</div>';
+
+    const prevBtn = container.querySelector('.pagination-prev');
+    if (prevBtn && currentPage > 1) {
+        prevBtn.addEventListener('click', () => onPageChange(currentPage - 1));
+    }
+
+    const nextBtn = container.querySelector('.pagination-next');
+    if (nextBtn && currentPage < totalPages) {
+        nextBtn.addEventListener('click', () => onPageChange(currentPage + 1));
+    }
+
+    container.querySelectorAll('.pagination-pages .pagination-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const targetPage = parseInt(e.currentTarget.dataset.page);
+            if (targetPage && targetPage !== currentPage) {
+                onPageChange(targetPage);
+            }
+        });
+    });
+}
+
+// Debounce helper for server-side search input
+function debounce(fn, delay = 250) {
+    let timer = null;
+    return function(...args) {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn.apply(this, args), delay);
+    };
+}
+
 // ---------- Dynamic Data ----------
 let PRODUCTS = [];
 let CUSTOMERS = [];
@@ -87,6 +199,9 @@ let INVOICES = [];
 let PURCHASES = [];
 let CASH_TRANSACTIONS = [];
 let USERS = [];
+let PRICELISTS = [];
+// POS effective prices cache
+let currentPOSCustomerEffectivePrices = {};
 
 // Sales data for chart (dynamic)
 let SALES_CHART_DATA = [];
@@ -112,12 +227,13 @@ const PAGE_TITLES = {
     settings: { title: 'Pengaturan', subtitle: 'Konfigurasi profil dan preferensi' },
     roles: { title: 'Otoritas Akses', subtitle: 'Kelola hak akses dan peran staff' },
     'master-data': { title: 'Master Data', subtitle: 'Kelola kategori, satuan, dan tipe pembayaran' },
+    pricelists: { title: 'Daftar Harga Khusus', subtitle: 'Kelola pricelist harga bertingkat untuk pelanggan' },
 };
 
 // ---------- Role Based Access Control (RBAC) ----------
 const ROLE_PERMISSIONS = {
-    admin: ['dashboard', 'pos', 'products', 'customers', 'vendors', 'purchases', 'invoices', 'piutang', 'hutang', 'cashflow', 'profitloss', 'balance', 'reports', 'settings', 'roles', 'master-data', 'customerfee'],
-    finance: ['dashboard', 'piutang', 'hutang', 'cashflow', 'profitloss', 'balance', 'reports'],
+    admin: ['dashboard', 'pos', 'products', 'customers', 'vendors', 'purchases', 'invoices', 'piutang', 'hutang', 'cashflow', 'profitloss', 'balance', 'reports', 'settings', 'roles', 'master-data', 'customerfee', 'pricelists'],
+    finance: ['dashboard', 'invoices', 'piutang', 'hutang', 'cashflow', 'profitloss', 'balance', 'reports'],
     gudang: ['dashboard', 'products', 'purchases', 'vendors'],
     kasir: ['dashboard', 'pos', 'customers', 'invoices', 'piutang']
 };
@@ -136,6 +252,13 @@ function applyRoleRestrictions() {
             item.style.display = 'none';
         }
     });
+
+    // Control visibility of invoice import buttons: only Admin & Finance
+    const canImportInvoice = role === 'admin' || role === 'finance';
+    const btnImportInv = document.getElementById('btn-import-invoice');
+    if (btnImportInv) btnImportInv.style.display = canImportInvoice ? '' : 'none';
+    const btnImportPiutang = document.getElementById('btn-import-piutang');
+    if (btnImportPiutang) btnImportPiutang.style.display = canImportInvoice ? '' : 'none';
 
     // Also hide nav groups if all their items are hidden
     document.querySelectorAll('.nav-group').forEach(group => {
@@ -187,6 +310,9 @@ function navigateTo(page) {
 
     if (page === 'settings') {
         loadCompanyProfile();
+    }
+    if (page === 'pricelists') {
+        fetchPricelists();
     }
 
     // Close mobile sidebar
@@ -370,7 +496,7 @@ async function checkReconciliationStatus() {
             const alertText = document.getElementById('reconciliation-alert-text');
             if (data.success && data.status && !data.status.balanced) {
                 alertText.innerHTML = `Ditemukan ketidaksesuaian data keuangan pada pencatatan otomatis harian. Masalah:<br/>` + 
-                    data.status.issues.map(issue => `• ${issue}`).join('<br/>') +
+                    data.status.issues.map(issue => `&bull; ${issue}`).join('<br/>') +
                     `<br/><span style="font-weight: 600; margin-top: 0.5rem; display: inline-block;">Silakan periksa laporan keuangan dan log transaksi cash flow.</span>`;
                 alertEl.style.display = 'block';
                 if (window.lucide) window.lucide.createIcons();
@@ -555,21 +681,18 @@ function renderLowStock() {
     `).join('');
 
     if (lowStock.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color: var(--gray-400); padding:2rem;">Semua stok aman ✓</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color: var(--gray-400); padding:2rem;">Semua stok aman</td></tr>';
     }
 }
 
 // ---------- Products Page ----------
 function renderProducts(filter = '', category = '') {
-    const tbody = document.getElementById('products-body');
-    let filtered = PRODUCTS;
-    if (filter) {
-        const q = filter.toLowerCase();
-        filtered = filtered.filter(p => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
-    }
-    if (category && category !== 'all') {
-        filtered = filtered.filter(p => p.category === category);
-    }
+    // Server-side pagination: reset to page 1 and fetch
+    paginationState.products.page = 1;
+    fetchProducts(1);
+}
+
+function _renderProductsTable(filtered) {
 
     tbody.innerHTML = filtered.map(p => {
         const stockStatus = p.stock <= p.minStock ? 'rendah' : 'aman';
@@ -603,18 +726,26 @@ function renderProducts(filter = '', category = '') {
     if (window.lucide) lucide.createIcons();
 }
 
-// Search & filter bindings for products
-document.getElementById('product-search')?.addEventListener('input', (e) => {
-    renderProducts(e.target.value, document.getElementById('product-category-filter').value);
-});
-document.getElementById('product-category-filter')?.addEventListener('change', (e) => {
-    renderProducts(document.getElementById('product-search').value, e.target.value);
+// Search & filter bindings for products (server-side, debounced)
+document.getElementById('product-search')?.addEventListener('input', debounce(() => {
+    paginationState.products.page = 1;
+    fetchProducts(1);
+}, 300));
+document.getElementById('product-category-filter')?.addEventListener('change', () => {
+    paginationState.products.page = 1;
+    fetchProducts(1);
 });
 
 // ---------- Customers Page ----------
 let customerViewMode = 'kanban';
 
 function renderCustomers(filter = '', type = '') {
+    // Server-side pagination: reset to page 1 and fetch
+    paginationState.customers.page = 1;
+    fetchCustomers(1);
+}
+
+function _renderCustomersLocal_UNUSED(filter = '', type = '') {
     const grid = document.getElementById('customers-grid');
     const listBody = document.getElementById('customers-list-body');
     if (!grid) return;
@@ -653,6 +784,7 @@ function renderCustomers(filter = '', type = '') {
                 <div>
                     <div class="entity-name">${c.name}</div>
                     <div class="entity-type">${c.type} &bull; ${c.city}</div>
+                    ${c.pricelistName ? `<div style="margin-top:0.25rem;"><span class="badge-pricelist-source" style="font-size:0.7rem; padding:0.15rem 0.4rem;">${c.pricelistName}</span></div>` : ''}
                 </div>
             </div>
             <div class="entity-details">
@@ -692,7 +824,10 @@ function renderCustomers(filter = '', type = '') {
             return `
             <tr style="cursor:pointer;" onclick="openCustomerDetail('${c.id}')">
                 <td style="font-weight:600; color: var(--blue-600);">${c.id}</td>
-                <td style="font-weight:600;">${c.name}</td>
+                <td style="font-weight:600;">
+                    ${c.name}
+                    ${c.pricelistName ? `<div style="margin-top:0.2rem;"><span class="badge-pricelist-source" style="font-size:0.65rem; padding:0.1rem 0.35rem;">${c.pricelistName}</span></div>` : ''}
+                </td>
                 <td><span class="badge-status aman">${c.type}</span></td>
                 <td>${c.city}</td>
                 <td>${c.phone}</td>
@@ -714,11 +849,13 @@ function renderCustomers(filter = '', type = '') {
     if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
-document.getElementById('customer-search')?.addEventListener('input', (e) => {
-    renderCustomers(e.target.value, document.getElementById('customer-type-filter').value);
-});
-document.getElementById('customer-type-filter')?.addEventListener('change', (e) => {
-    renderCustomers(document.getElementById('customer-search').value, e.target.value);
+document.getElementById('customer-search')?.addEventListener('input', debounce(() => {
+    paginationState.customers.page = 1;
+    fetchCustomers(1);
+}, 300));
+document.getElementById('customer-type-filter')?.addEventListener('change', () => {
+    paginationState.customers.page = 1;
+    fetchCustomers(1);
 });
 
 // Customer view toggle bindings
@@ -753,6 +890,11 @@ document.addEventListener('DOMContentLoaded', () => {
 let vendorViewMode = 'kanban';
 
 function renderVendors(filter = '') {
+    paginationState.vendors.page = 1;
+    fetchVendors(1);
+}
+
+function _renderVendorsLocal_UNUSED(filter = '') {
     const grid = document.getElementById('vendors-grid');
     const listBody = document.getElementById('vendors-list-body');
     if (!grid) return;
@@ -772,7 +914,7 @@ function renderVendors(filter = '') {
                 <div class="entity-avatar ${v.color}">${v.name.charAt(0)}</div>
                 <div>
                     <div class="entity-name">${v.name}</div>
-                    <div class="entity-type">${v.category} • ${v.city}</div>
+                    <div class="entity-type">${v.category} &middot; ${v.city}</div>
                 </div>
             </div>
             <div class="entity-details">
@@ -790,7 +932,7 @@ function renderVendors(filter = '') {
                 </div>
                 <div class="entity-detail">
                     <span class="entity-detail-label">Hutang</span>
-                    <span class="entity-detail-value" style="color: ${v.debt > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'}; font-weight:700;">${v.debt > 0 ? rp(v.debt) : 'Lunas ✓'}</span>
+                    <span class="entity-detail-value" style="color: ${v.debt > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'}; font-weight:700;">${v.debt > 0 ? rp(v.debt) : 'Lunas'}</span>
                 </div>
             </div>
         </div>
@@ -804,7 +946,7 @@ function renderVendors(filter = '') {
                 <td><span class="badge-status aman">${v.category}</span></td>
                 <td>${v.city}</td>
                 <td>${v.phone}</td>
-                <td style="font-weight:700; color: ${v.debt > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'};">${v.debt > 0 ? rp(v.debt) : 'Lunas ✓'}</td>
+                <td style="font-weight:700; color: ${v.debt > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'};">${v.debt > 0 ? rp(v.debt) : 'Lunas'}</td>
                 <td style="text-align: right; white-space: nowrap;">
                     <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Edit Vendor" onclick="openEditVendorModal('${v.id}')">
                         <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
@@ -817,9 +959,10 @@ function renderVendors(filter = '') {
     if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
-document.getElementById('vendor-search')?.addEventListener('input', (e) => {
-    renderVendors(e.target.value);
-});
+document.getElementById('vendor-search')?.addEventListener('input', debounce(() => {
+    paginationState.vendors.page = 1;
+    fetchVendors(1);
+}, 300));
 
 // Vendor view toggle bindings
 document.addEventListener('DOMContentLoaded', () => {
@@ -851,6 +994,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ---------- Purchases Page ----------
 function renderPurchases(filter = '') {
+    paginationState.purchases.page = 1;
+    fetchPurchases(1);
+}
+
+function _renderPurchasesLocal_UNUSED(filter = '') {
     if (!filter || typeof filter !== 'string') {
         const sel = document.getElementById('purchase-status-filter');
         filter = sel ? sel.value : 'all';
@@ -897,6 +1045,11 @@ function renderPurchases(filter = '') {
 
 // ---------- Invoices Page ----------
 function renderInvoices(filter = '') {
+    paginationState.invoices.page = 1;
+    fetchInvoices(1);
+}
+
+function _renderInvoicesLocal_UNUSED(filter = '') {
     if (!filter || typeof filter !== 'string') {
         const sel = document.getElementById('invoice-status-filter');
         filter = sel ? sel.value : 'all';
@@ -949,76 +1102,115 @@ function renderInvoices(filter = '') {
 }
 
 // ---------- Piutang Page ----------
-function renderPiutang(filter = '') {
+function renderPiutang(filter) {
+    paginationState.piutang.page = 1;
+    fetchPiutang(1);
+}
+
+function _renderPiutangLocal_UNUSED(filter) {
     if (!filter || typeof filter !== 'string') {
         const sel = document.getElementById('piutang-status-filter');
         filter = sel ? sel.value : 'all';
     }
-    // Summary
     const piutangInvoices = INVOICES.filter(i => !['lunas', 'batal'].includes(i.status.toLowerCase()));
     const totalPiutang = piutangInvoices.reduce((s, i) => s + (i.total - i.paid), 0);
-    // Backend stores 'Belum Bayar' (not 'belum') — match with includes() to handle both formats
     const belumBayar = INVOICES.filter(i => i.status.toLowerCase().includes('belum')).reduce((s, i) => s + i.total, 0);
     const sebagian = INVOICES.filter(i => i.status.toLowerCase() === 'sebagian').reduce((s, i) => s + (i.total - i.paid), 0);
 
-    document.getElementById('piutang-summary').innerHTML = `
-        <div class="finance-summary-card highlight">
-            <div class="fs-value">${rp(totalPiutang)}</div>
-            <div class="fs-label">Total Piutang</div>
-        </div>
-        <div class="finance-summary-card">
-            <div class="fs-value" style="color: var(--rose-500);">${rp(belumBayar)}</div>
-            <div class="fs-label">Belum Dibayar</div>
-        </div>
-        <div class="finance-summary-card">
-            <div class="fs-value" style="color: var(--amber-500);">${rp(sebagian)}</div>
-            <div class="fs-label">Dibayar Sebagian</div>
-        </div>
-    `;
+    document.getElementById('piutang-summary').innerHTML =
+        '<div class="finance-summary-card highlight">' +
+            '<div class="fs-value">' + rp(totalPiutang) + '</div>' +
+            '<div class="fs-label">Total Piutang</div>' +
+        '</div>' +
+        '<div class="finance-summary-card">' +
+            '<div class="fs-value" style="color:var(--rose-500);">' + rp(belumBayar) + '</div>' +
+            '<div class="fs-label">Belum Dibayar</div>' +
+        '</div>' +
+        '<div class="finance-summary-card">' +
+            '<div class="fs-value" style="color:var(--amber-500);">' + rp(sebagian) + '</div>' +
+            '<div class="fs-label">Dibayar Sebagian</div>' +
+        '</div>';
 
-    // Table
+    // Populate customer filter dropdown (preserving current selection)
+    const custFilterEl = document.getElementById('piutang-customer-filter');
+    if (custFilterEl) {
+        const selectedCust = custFilterEl.value;
+        const uniqueCustomers = [...new Map(
+            INVOICES.filter(i => i.customer).map(i => [String(i.customerId), i.customer])
+        ).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+        custFilterEl.innerHTML = '<option value="all">Semua Pelanggan</option>' +
+            uniqueCustomers.map(([cid, cname]) =>
+                '<option value="' + cid + '" ' + (selectedCust === cid ? 'selected' : '') + '>' + cname + '</option>'
+            ).join('');
+    }
+
     const tbody = document.getElementById('piutang-body');
-    // Hide 'batal' (cancelled) invoices by default
     let filtered = INVOICES.filter(i => i.status.toLowerCase() !== 'batal');
+    const today = new Date().toISOString().split('T')[0];
 
     if (filter && filter !== 'all') {
-        filtered = filtered.filter(i => {
-            if (filter === 'belum bayar' || filter === 'belum') {
-                return i.status.toLowerCase().includes('belum');
-            }
-            return i.status.toLowerCase() === filter;
-        });
+        if (filter === 'overdue') {
+            filtered = filtered.filter(i => { const sisa = i.total - i.paid; return sisa > 0 && i.dueDate && i.dueDate < today; });
+        } else if (filter === 'belum bayar' || filter === 'belum') {
+            filtered = filtered.filter(i => i.status.toLowerCase().includes('belum'));
+        } else {
+            filtered = filtered.filter(i => i.status.toLowerCase() === filter);
+        }
     }
+
+    const custFilter = custFilterEl ? custFilterEl.value : 'all';
+    if (custFilter && custFilter !== 'all') {
+        filtered = filtered.filter(i => String(i.customerId) === String(custFilter));
+    }
+
     const searchEl = document.getElementById('piutang-search');
     if (searchEl && searchEl.value) {
         const q = searchEl.value.toLowerCase();
-        filtered = filtered.filter(i =>
-            i.id.toLowerCase().includes(q) ||
-            (i.customer && i.customer.toLowerCase().includes(q))
-        );
+        filtered = filtered.filter(i => i.id.toLowerCase().includes(q) || (i.customer && i.customer.toLowerCase().includes(q)));
     }
+
+    const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+    const canPayOrVoid = role === 'admin' || role === 'finance';
 
     tbody.innerHTML = filtered.map(inv => {
         const sisa = inv.total - inv.paid;
-        return `
-            <tr>
-                <td style="font-weight:600; color: var(--blue-600);">${inv.id}</td>
-                <td>${inv.customer}</td>
-                <td style="font-weight:700;">${rp(inv.total)}</td>
-                <td>${rp(inv.paid)}</td>
-                <td style="font-weight:700; color: ${sisa > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'}">${rp(sisa)}</td>
-                <td>${inv.dueDate || '-'}</td>
-                <td>${inv.status.toLowerCase().includes('belum') ? '-' : (inv.paidDate || '-')}</td>
-                <td>${inv.status.toLowerCase().includes('belum') ? '-' : (inv.type || '-')}</td>
-                <td><span class="badge-status ${inv.status.toLowerCase().includes('belum') ? 'belum' : inv.status.toLowerCase().replace(/\s+/g, '-')}">${capitalize(inv.status)}</span></td>
-                <td>${inv.status.toLowerCase() !== 'lunas' ? `<button class="btn-toolbar primary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="openPiutangPaymentModal('${inv.id}', ${sisa})">Input Bayar</button>` : '—'}</td>
-            </tr>
-        `;
+        const isOverdue = sisa > 0 && inv.dueDate && inv.dueDate < today;
+        const statusLower = (inv.status || '').toLowerCase();
+        const overdueBadge = isOverdue
+            ? '<span class="badge-status overdue" style="display:inline-flex;align-items:center;gap:3px;font-size:0.7rem;padding:2px 7px;margin-left:4px;vertical-align:middle;"><i data-lucide="clock" style="width:11px;height:11px;"></i> Lewat JT</span>'
+            : '';
+        let actionButtons;
+        if (canPayOrVoid) {
+            const bayarBtn = statusLower !== 'lunas'
+                ? '<button class="btn-toolbar primary" style="padding:0.25rem 0.5rem;font-size:0.75rem;" onclick="openPiutangPaymentModal(\'' + inv.id + '\',' + sisa + ')">Bayar</button>'
+                : '<span style="color:var(--gray-400);font-size:0.8rem;">Lunas</span>';
+            actionButtons = '<button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem;font-size:0.75rem;margin-right:0.25rem;" title="Riwayat Cicilan" onclick="openPaymentHistoryModal(\'' + inv.id + '\')"><i data-lucide="list" style="width:13px;height:13px;margin:0;"></i></button>' + bayarBtn;
+        } else {
+            actionButtons = '<button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem;font-size:0.75rem;" title="Riwayat Cicilan" onclick="openPaymentHistoryModal(\'' + inv.id + '\')"><i data-lucide="list" style="width:13px;height:13px;margin:0;"></i></button>';
+        }
+        return '<tr>' +
+            '<td style="font-weight:600;color:var(--blue-600);">' + inv.id + '</td>' +
+            '<td>' + inv.customer + '</td>' +
+            '<td style="font-weight:700;">' + rp(inv.total) + '</td>' +
+            '<td>' + rp(inv.paid) + '</td>' +
+            '<td style="font-weight:700;color:' + (sisa > 0 ? 'var(--rose-500)' : 'var(--emerald-500)') + ';">' + rp(sisa) + '</td>' +
+            '<td>' + (inv.dueDate || '-') + overdueBadge + '</td>' +
+            '<td>' + (statusLower.includes('belum') ? '-' : (inv.paidDate || '-')) + '</td>' +
+            '<td>' + (statusLower.includes('belum') ? '-' : (inv.type || '-')) + '</td>' +
+            '<td><span class="badge-status ' + (statusLower.includes('belum') ? 'belum' : statusLower.replace(/\s+/g, '-')) + '">' + capitalize(inv.status) + '</span></td>' +
+            '<td style="white-space:nowrap;">' + actionButtons + '</td>' +
+            '</tr>';
     }).join('');
+    if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
 // ---------- Hutang Page ----------
 function renderHutang(filter = '') {
+    paginationState.hutang.page = 1;
+    fetchHutang(1);
+}
+
+function _renderHutangLocal_UNUSED(filter = '') {
     if (!filter || typeof filter !== 'string') {
         const sel = document.getElementById('hutang-status-filter');
         filter = sel ? sel.value : 'all';
@@ -1061,9 +1253,15 @@ function renderHutang(filter = '') {
         );
     }
 
+    const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+    const canPay = role === 'admin' || role === 'finance';
+    const canEditPO = role === 'admin' || role === 'finance' || role === 'gudang';
+
     tbody.innerHTML = purchaseData.map(p => {
         const sisa = p.total - p.paid;
         const st = sisa > 0 ? 'belum' : 'lunas';
+        const payBtn = (canPay && sisa > 0) ? `<button class="btn-toolbar primary" style="padding:0.3rem 0.65rem; font-size:0.75rem; margin-right:0.25rem;" onclick="openHutangPaymentModal('${p.id}', ${sisa})">Bayar</button>` : '';
+        const editBtn = canEditPO ? `<button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" title="Edit PO" onclick="openEditPurchaseModal('${p.id}')"><i data-lucide="edit-2" style="width:13px;height:13px;margin:0;"></i></button>` : '';
         return `
             <tr>
                 <td style="font-weight:600; color: var(--blue-600);">${p.id}</td>
@@ -1075,15 +1273,101 @@ function renderHutang(filter = '') {
                 <td>${sisa > 0 && parseFloat(p.paid) === 0 ? '-' : (p.paidDate || '-')}</td>
                 <td>${sisa > 0 && parseFloat(p.paid) === 0 ? '-' : (p.type || '-')}</td>
                 <td><span class="badge-status ${st}">${sisa > 0 ? 'Belum Lunas' : 'Lunas'}</span></td>
-                <td>${sisa > 0 ? `<button class="btn-toolbar primary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="openHutangPaymentModal('${p.id}', ${sisa})">Bayar</button>` : '—'}</td>
+                <td style="text-align:right; white-space:nowrap;">${payBtn}${editBtn}</td>
             </tr>
         `;
     }).join('');
+
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function fetchHutang(page) {
+    try {
+        if (page !== undefined) paginationState.hutang.page = page;
+        const q = document.getElementById('hutang-search')?.value || '';
+        const status = document.getElementById('hutang-status-filter')?.value || 'all';
+        const pg = paginationState.hutang.page;
+        let url = '/api/finance/payables?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (status && status !== 'all') url += '&status=' + encodeURIComponent(status);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+        const summary = json.summary || {};
+        paginationState.hutang.total = pag.total || 0;
+        paginationState.hutang.totalPages = pag.totalPages || 1;
+
+        // Summary cards
+        const summEl = document.getElementById('hutang-summary');
+        if (summEl) {
+            const totalDebt = parseFloat(summary.total_debt || 0);
+            const vendorsWithDebt = parseInt(summary.vendors_with_debt || 0);
+            const vendorsLunas = parseInt(summary.vendors_lunas || 0);
+            summEl.innerHTML = `
+            <div class="finance-summary-card highlight">
+                <div class="fs-value">${rp(totalDebt)}</div>
+                <div class="fs-label">Total Hutang</div>
+            </div>
+            <div class="finance-summary-card">
+                <div class="fs-value">${vendorsWithDebt}</div>
+                <div class="fs-label">Vendor Belum Lunas</div>
+            </div>
+            <div class="finance-summary-card">
+                <div class="fs-value">${vendorsLunas}</div>
+                <div class="fs-label">Vendor Lunas</div>
+            </div>`;
+        }
+
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        const canPay = role === 'admin' || role === 'finance';
+        const canEditPO = role === 'admin' || role === 'finance' || role === 'gudang';
+
+        const tbody = document.getElementById('hutang-body');
+        if (!tbody) return;
+        tbody.innerHTML = rows.map(p => {
+            const sisa = p.total - p.paid;
+            const st = sisa > 0 ? 'belum' : 'lunas';
+            const payBtn = (canPay && sisa > 0) ? `<button class="btn-toolbar primary" style="padding:0.3rem 0.65rem; font-size:0.75rem; margin-right:0.25rem;" onclick="openHutangPaymentModal('${p.id}', ${sisa})">Bayar</button>` : '';
+            const editBtn = canEditPO ? `<button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" title="Edit PO" onclick="openEditPurchaseModal('${p.id}')"><i data-lucide="edit-2" style="width:13px;height:13px;margin:0;"></i></button>` : '';
+            return `
+            <tr>
+                <td style="font-weight:600; color: var(--blue-600);">${p.id}</td>
+                <td>${p.vendor}</td>
+                <td style="font-weight:700;">${rp(p.total)}</td>
+                <td>${rp(p.paid)}</td>
+                <td style="font-weight:700; color: ${sisa > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'};">${rp(sisa)}</td>
+                <td>${p.dueDate || p.date || '-'}</td>
+                <td>${sisa > 0 && parseFloat(p.paid) === 0 ? '-' : (p.paidDate || '-')}</td>
+                <td>${sisa > 0 && parseFloat(p.paid) === 0 ? '-' : (p.type || '-')}</td>
+                <td><span class="badge-status ${st}">${sisa > 0 ? 'Belum Lunas' : 'Lunas'}</span></td>
+                <td style="text-align:right; white-space:nowrap;">${payBtn}${editBtn}</td>
+            </tr>`;
+        }).join('');
+
+        renderPagination({
+            containerId: 'pagination-hutang',
+            currentPage: pg,
+            totalItems: paginationState.hutang.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchHutang(p)
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (err) {
+        console.error('Failed to fetch hutang', err);
+    }
 }
 
 // ---------- Cash Flow Page ----------
 function renderCashFlow(filter = '') {
-    // Untuk summary, hanya hitung transaksi aktif
+    if (filter && filter !== '') currentCashFlowFilter = filter;
+    paginationState.cashflow.page = 1;
+    fetchCashTransactions(1);
+}
+
+function _renderCashFlowLocal_UNUSED(filter = '') {
     const activeTx = CASH_TRANSACTIONS.filter(t => (t.status || 'active') === 'active');
     const totalIn = activeTx.filter(t => t.type === 'IN').reduce((s, t) => s + t.amount, 0);
     const totalOut = activeTx.filter(t => t.type === 'OUT').reduce((s, t) => s + t.amount, 0);
@@ -1126,7 +1410,7 @@ function renderCashFlow(filter = '') {
             <td>${t.date}</td>
             <td style="font-weight:600;">${t.desc}</td>
             <td><span class="badge-status ${t.category === 'Penjualan' || t.category === 'Piutang' ? 'lunas' : 'tempo'}">${t.category}</span></td>
-            <td><span class="badge-status ${t.type.toLowerCase()}">${t.type === 'IN' ? '↑ Masuk' : '↓ Keluar'}</span></td>
+            <td><span class="badge-status ${t.type.toLowerCase()}">${t.type === 'IN' ? 'Masuk' : 'Keluar'}</span></td>
             <td style="font-weight:700; color: ${t.type === 'IN' ? 'var(--emerald-500)' : 'var(--rose-500)'};">${t.type === 'IN' ? '+' : '-'}${rp(t.amount)}</td>
             <td><span class="badge-status ${t.status === 'cancelled' ? 'batal' : 'lunas'}">${t.status === 'cancelled' ? 'Dibatalkan' : 'Aktif'}</span></td>
             <td>${t.method}</td>
@@ -1501,6 +1785,9 @@ let selectedCartPaymentTypeId = 'PT-1';
 
 function renderPOSProducts(searchTerm = '', category = '') {
     const grid = document.getElementById('pos-product-grid');
+    const customerId = document.getElementById('pos-customer-id')?.value;
+    const noCustomer = !customerId;
+
     let filtered = PRODUCTS;
     if (searchTerm) {
         const q = searchTerm.toLowerCase();
@@ -1509,6 +1796,46 @@ function renderPOSProducts(searchTerm = '', category = '') {
     if (category && category !== 'all') {
         filtered = filtered.filter(p => p.category === category);
     }
+
+    if (noCustomer) {
+        // Tampilkan pesan + produk dinonaktifkan
+        const placeholder = `<div style="position:relative; display:contents;">
+            ${filtered.map(p => `
+            <div class="pos-product-card" style="opacity:0.45; cursor:not-allowed; pointer-events:none;" title="Pilih pelanggan terlebih dahulu">
+                <div class="pos-product-emoji">${p.emoji}</div>
+                <div class="pos-product-name">${p.name}</div>
+                <div class="pos-product-price">${rp(p.price)}</div>
+                <div class="pos-product-stock">Stok: ${p.stock} ${p.unit}</div>
+            </div>
+            `).join('')}
+        </div>`;
+        grid.innerHTML = placeholder;
+        // Overlay pesan di atas grid
+        let overlayEl = document.getElementById('pos-product-lock-overlay');
+        if (!overlayEl) {
+            overlayEl = document.createElement('div');
+            overlayEl.id = 'pos-product-lock-overlay';
+            overlayEl.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;z-index:10;pointer-events:none;';
+            overlayEl.innerHTML = '<div style="background:rgba(255,255,255,0.92);border:1.5px solid var(--blue-200);border-radius:0.75rem;padding:1rem 1.5rem;text-align:center;box-shadow:0 4px 16px rgba(59,130,246,0.12);">' +
+                '<i data-lucide="user" style="width:20px;height:20px;color:var(--blue-500);display:block;margin:0 auto 0.5rem;"></i>' +
+                '<div style="font-weight:600;color:var(--blue-700);font-size:0.875rem;">Pilih pelanggan terlebih dahulu</div>' +
+                '<div style="font-size:0.75rem;color:var(--gray-500);margin-top:0.2rem;">Harga produk ditentukan berdasarkan pricelist pelanggan</div>' +
+                '</div>';
+            const posProducts = document.querySelector('.pos-products');
+            if (posProducts) {
+                if (getComputedStyle(posProducts).position === 'static') posProducts.style.position = 'relative';
+                posProducts.appendChild(overlayEl);
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            }
+        } else {
+            overlayEl.style.display = 'flex';
+        }
+        return;
+    }
+
+    // Sembunyikan overlay jika ada
+    const overlayEl = document.getElementById('pos-product-lock-overlay');
+    if (overlayEl) overlayEl.style.display = 'none';
 
     grid.innerHTML = filtered.map(p => `
         <div class="pos-product-card" onclick="addToCart('${p.id}')">
@@ -1523,13 +1850,35 @@ function renderPOSProducts(searchTerm = '', category = '') {
 function addToCart(productId) {
     const product = PRODUCTS.find(p => p.id === productId);
     if (!product) return;
+    // Guard: wajib pilih pelanggan dulu
+    const customerId = document.getElementById('pos-customer-id')?.value;
+    if (!customerId) {
+        showToast('Pilih pelanggan terlebih dahulu sebelum memilih produk.', 'warning');
+        return;
+    }
 
     const existing = cart.find(c => c.id === productId);
     if (existing) {
         existing.qty += 1;
     } else {
-        // Initialize with fee fields
-        cart.push({ ...product, qty: 1, fee: 0, feeNotes: '' });
+        // Apply pricelist effective price if customer is selected
+        const eff = currentPOSCustomerEffectivePrices[productId];
+        const effectivePrice = eff ? parseFloat(eff.harga_efektif) : parseFloat(product.price);
+        const sumberHarga = eff ? eff.sumber_harga : 'master';
+        const pricelistNama = eff ? (eff.pricelist_nama || '') : '';
+        const cost = parseFloat(product.cost_price || product.cost || 0);
+        cart.push({
+            ...product,
+            price: effectivePrice,
+            originalPrice: parseFloat(product.price),
+            sumberHarga,
+            pricelistNama,
+            cost,
+            manual_override: false,
+            qty: 1,
+            fee: 0,
+            feeNotes: ''
+        });
     }
     renderCart();
 }
@@ -1578,7 +1927,11 @@ function renderCart() {
         <div class="cart-item">
             <div class="cart-item-row">
                 <div class="cart-item-info">
-                    <div class="cart-item-name">${item.emoji} ${item.name}</div>
+                    <div class="cart-item-name">
+                        ${item.emoji ? item.emoji + ' ' : ''}${item.name}
+                        ${item.manual_override ? '<span class="badge-manual-source" style="font-size:0.65rem; margin-left:4px;">✏️ Manual</span>' : (item.sumberHarga === 'pricelist' ? `<span class="badge-pricelist-source" style="font-size:0.65rem; margin-left:4px;">${item.pricelistNama || 'Pricelist'}</span>` : '')}
+                        ${(item.cost > 0 && item.price < item.cost) ? '<span class="badge-hpp-warning" style="font-size:0.65rem; margin-left:4px;">⚠️ Bawah HPP</span>' : ''}
+                    </div>
                     <div class="cart-item-price-edit" style="display:flex; align-items:center; gap:0.25rem;">
                         <span style="font-size:0.75rem; color:var(--gray-500);">Rp</span>
                         <input type="number" value="${item.price}" onchange="updateCartPrice('${item.id}', this.value)" style="width:70px; padding:0.1rem 0.25rem; font-size:0.875rem; border:1px solid var(--gray-200); border-radius:0.25rem;" />
@@ -1586,7 +1939,7 @@ function renderCart() {
                     </div>
                 </div>
                 <div class="cart-item-qty">
-                    <button class="cart-qty-btn" onclick="updateCartQty('${item.id}', -1)">−</button>
+                    <button class="cart-qty-btn" onclick="updateCartQty('${item.id}', -1)">-</button>
                     <span class="cart-qty-val">${item.qty}</span>
                     <button class="cart-qty-btn" onclick="updateCartQty('${item.id}', 1)">+</button>
                 </div>
@@ -1595,7 +1948,7 @@ function renderCart() {
             </div>
             ${isAdmin ? `
             <div class="cart-item-fee-row">
-                <span class="cart-item-fee-label">🔒 Fee (Rp)</span>
+                <span class="cart-item-fee-label">Fee (Rp)</span>
                 <input type="number" min="0" value="${item.fee || 0}" placeholder="0"
                     class="cart-item-fee-input"
                     onchange="updateCartFee('${item.id}', this.value)"
@@ -1613,7 +1966,8 @@ function renderCart() {
         const item = cart.find(c => c.id === id);
         if (item) {
             item.price = parseFloat(newPrice) || 0;
-            renderCart();
+            item.manual_override = true; // R3: track manual edit
+            // Re-render without full re-render so input focus is kept
         }
     };
 
@@ -1682,6 +2036,17 @@ document.addEventListener('change', (e) => {
     if (e.target && e.target.id === 'cart-payment-type') {
         selectedCartPaymentTypeId = e.target.value;
         console.log(`[Frontend State] Payment method changed to: ${selectedCartPaymentTypeId}`);
+        // Show/hide DP wrapper based on payment type
+        const payName = getPaymentTypeName(e.target).toLowerCase();
+        const isKredit = payName.includes('tempo') || payName.includes('kredit') || payName.includes('credit');
+        const dpWrapper = document.getElementById('cart-dp-wrapper');
+        if (dpWrapper) {
+            dpWrapper.style.display = isKredit ? 'block' : 'none';
+            if (!isKredit) {
+                const dpInput = document.getElementById('cart-dp-amount');
+                if (dpInput) dpInput.value = '';
+            }
+        }
     }
 });
 
@@ -1715,11 +2080,12 @@ document.getElementById('btn-checkout')?.addEventListener('click', async () => {
     // Tunai = full immediate payment
 
     const subtotal = cart.reduce((s, c) => s + c.price * c.qty, 0);
-    const ppnAmount = subtotal * (currentPpnRate / 100);
+    const ppnAmount = (typeof currentPpnEnabled !== 'undefined' && currentPpnEnabled) ? Math.round(subtotal * (currentPpnRate / 100)) : 0;
     const total = subtotal + ppnAmount;
 
-    // Tempo/credit: no upfront payment; all other methods (Tunai, Transfer, etc.) = full paid
-    const paid = isTempo ? 0 : total;
+    // Tempo/credit: if DP entered use it, otherwise 0; Tunai/Transfer = full paid
+    const dpAmount = isTempo ? (parseFloat(document.getElementById('cart-dp-amount')?.value) || 0) : 0;
+    const paid = isTempo ? dpAmount : total;
 
     console.log(`[Checkout] payment_type_id=${payment_type_id} | name=${payTypeName} | isTempo=${isTempo} | paid=${paid} | total=${total}`);
 
@@ -1760,8 +2126,11 @@ document.getElementById('btn-checkout')?.addEventListener('click', async () => {
             openModal('modal-checkout-success');
 
             cart = [];
+            currentPOSCustomerEffectivePrices = {};
             document.getElementById('pos-customer-id').value = '';
             document.getElementById('pos-customer-search').value = '';
+            const posBadge = document.getElementById('pos-customer-pricelist-badge');
+            if (posBadge) posBadge.innerHTML = '';
             selectedCartPaymentTypeId = 'PT-1';
             document.getElementById('cart-payment-type').value = 'PT-1';
 
@@ -1807,7 +2176,7 @@ function populateCustomerSelect(filter = '') {
     dropdown.innerHTML = filtered.map(c => `
         <div class="customer-dropdown-item" data-id="${c.id}" data-name="${c.name}" style="padding: 0.5rem 0.75rem; cursor: pointer; border-bottom: 1px solid var(--gray-100); display: flex; flex-direction: column; transition: background-color 0.2s;">
             <span style="font-weight: 500; font-size: 0.875rem;">${c.name}</span>
-            <span style="font-size: 0.75rem; color: var(--gray-500);">${c.type} • ${c.phone}</span>
+            <span style="font-size: 0.75rem; color: var(--gray-500);">${c.type} &middot; ${c.phone}</span>
         </div>
     `).join('');
 
@@ -1816,9 +2185,24 @@ function populateCustomerSelect(filter = '') {
         item.addEventListener('click', (e) => {
             const id = e.currentTarget.dataset.id;
             const name = e.currentTarget.dataset.name;
+            const currentCustomerId = document.getElementById('pos-customer-id').value;
+            // Jika pelanggan sudah dipilih dan berbeda, dan keranjang tidak kosong: minta konfirmasi
+            if (currentCustomerId && currentCustomerId !== id && cart.length > 0) {
+                if (!confirm('Mengganti pelanggan akan mengosongkan keranjang karena pricelist mungkin berbeda. Lanjutkan?')) {
+                    dropdown.style.display = 'none';
+                    return;
+                }
+                // Kosongkan keranjang
+                cart = [];
+                renderCart();
+            }
             document.getElementById('pos-customer-search').value = name;
             document.getElementById('pos-customer-id').value = id;
             dropdown.style.display = 'none';
+            handlePOSCustomerChange(id);
+            // Update product grid (unlock)
+            const activeCat = document.querySelector('.pos-category-tab.active')?.dataset.cat || 'all';
+            renderPOSProducts(document.getElementById('pos-search')?.value || '', activeCat);
         });
 
         // Add hover effect
@@ -1887,7 +2271,7 @@ document.querySelectorAll('.tab-filters').forEach(filterGroup => {
                 case 'invoices': renderInvoices(filter); break;
                 case 'piutang': renderPiutang(filter); break;
                 case 'hutang': renderHutang(filter); break;
-                case 'cashflow': renderCashFlow(filter); break;
+                case 'cashflow': currentCashFlowFilter = filter; paginationState.cashflow.page = 1; fetchCashTransactions(1); break;
                 case 'purchases': renderPurchases(filter); break;
             }
         });
@@ -2010,6 +2394,7 @@ async function init() {
         fetchDashboardSummary(),
         fetchProducts(),
         fetchCustomers(),
+        fetchPricelists(),
         fetchVendors(),
         fetchPurchases(),
         fetchInvoices(),
@@ -2082,11 +2467,12 @@ const getAuthHeaders = () => ({
     'Content-Type': 'application/json'
 });
 
-async function fetchProducts() {
+async function fetchProducts(page) {
     try {
-        const res = await fetch('/api/products', { headers: getAuthHeaders() });
-        const data = await res.json();
-        PRODUCTS = data.map(p => ({
+        // Selalu ambil data lengkap untuk PRODUCTS (dipakai POS, dropdown, filter lokal)
+        const resAll = await fetch('/api/products?all=true', { headers: getAuthHeaders() });
+        const dataAll = await resAll.json();
+        const mapProduct = p => ({
             id: p.id,
             sku: p.sku,
             brand: p.brand || '',
@@ -2099,9 +2485,68 @@ async function fetchProducts() {
             minStock: parseFloat(p.min_stock),
             unit: p.unit || 'pcs',
             unit_id: p.unit_id,
-            emoji: '📦'
-        }));
-        renderProducts(document.getElementById('product-search')?.value, document.getElementById('product-category-filter')?.value);
+            emoji: ''
+        });
+        PRODUCTS = (Array.isArray(dataAll) ? dataAll : []).map(mapProduct);
+
+        // Paginated fetch untuk tabel produk
+        if (page !== undefined) paginationState.products.page = page;
+        const q = document.getElementById('product-search')?.value || '';
+        const category = document.getElementById('product-category-filter')?.value || '';
+        const pg = paginationState.products.page;
+        let url = '/api/products?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (category && category !== 'all') url += '&category=' + encodeURIComponent(category);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+        paginationState.products.total = pag.total || 0;
+        paginationState.products.totalPages = pag.totalPages || 1;
+
+        const tbody = document.getElementById('products-body');
+        if (!tbody) return;
+        tbody.innerHTML = rows.map(p => {
+            const pr = mapProduct(p);
+            const stockStatus = pr.stock <= pr.minStock ? 'rendah' : 'aman';
+            const stockLabel = pr.stock <= pr.minStock ? 'Rendah' : 'Aman';
+            return `
+            <tr>
+                <td><code style="background:var(--gray-100); padding:2px 6px; border-radius:4px; font-size:0.78rem;">${pr.sku}</code></td>
+                <td style="font-weight:600;">${pr.name}</td>
+                <td>${pr.category}</td>
+                <td>${rp(pr.cost)}</td>
+                <td style="font-weight:700;">${rp(pr.price)}</td>
+                <td style="font-weight:700;">${pr.stock}</td>
+                <td>${pr.unit}</td>
+                <td>${pr.minStock}</td>
+                <td><span class="badge-status ${stockStatus}">${stockLabel}</span></td>
+                <td style="text-align: right; white-space: nowrap;">
+                    <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Edit Produk" onclick="openEditProductModal('${pr.id}')">
+                        <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                    <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem; color: var(--blue-600);" title="Stock Opname" onclick="openStockOpnameModal('${pr.id}')">
+                        <i data-lucide="boxes" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                    <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--rose-500);" title="Hapus Produk" onclick="deleteProduct('${pr.id}')">
+                        <i data-lucide="trash-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                </td>
+            </tr>
+            `;
+        }).join('');
+
+        renderPagination({
+            containerId: 'pagination-products',
+            currentPage: pg,
+            totalItems: paginationState.products.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchProducts(p)
+        });
+
+        if (window.lucide) lucide.createIcons();
     } catch (err) {
         console.error('Failed to fetch products', err);
     }
@@ -2247,11 +2692,9 @@ async function deleteProduct(id) {
     }
 }
 
-async function fetchCustomers() {
+async function fetchCustomers(page) {
     try {
-        const res = await fetch('/api/customers', { headers: getAuthHeaders() });
-        const data = await res.json();
-        CUSTOMERS = data.map(c => ({
+        const mapCustomer = c => ({
             ...c,
             id: c.id,
             name: c.name,
@@ -2268,9 +2711,141 @@ async function fetchCustomers() {
             totalSpent: parseFloat(c.total_belanja) || 0,
             outstandingReceivables: parseFloat(c.total_piutang_berjalan) || 0,
             remainingLimit: parseFloat(c.sisa_limit_piutang) ?? parseFloat(c.credit_lmt) ?? 0,
+            pricelistId: c.pricelist_id || null,
+            pricelistName: c.pricelist_nama || c.pricelist_name || '',
+            pricelistKode: c.pricelist_kode || '',
             color: 'blue'
-        }));
-        renderCustomers(document.getElementById('customer-search')?.value, document.getElementById('customer-type-filter')?.value);
+        });
+
+        // Fetch all for POS dropdown / POS search (unpaginated)
+        const resAll = await fetch('/api/customers?all=true', { headers: getAuthHeaders() });
+        const dataAll = await resAll.json();
+        CUSTOMERS = (Array.isArray(dataAll) ? dataAll : []).map(mapCustomer);
+        // Update POS dropdown
+        if (typeof populateCustomerSelect === 'function') {
+            populateCustomerSelect(document.getElementById('pos-customer-search')?.value || '');
+        }
+
+        // Paginated fetch for table
+        if (page !== undefined) paginationState.customers.page = page;
+        const q = document.getElementById('customer-search')?.value || '';
+        const type = document.getElementById('customer-type-filter')?.value || '';
+        const pg = paginationState.customers.page;
+        let url = '/api/customers?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (type && type !== 'all') url += '&category=' + encodeURIComponent(type);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = (json.data || []).map(mapCustomer);
+        const pag = json.pagination || {};
+        paginationState.customers.total = pag.total || 0;
+        paginationState.customers.totalPages = pag.totalPages || 1;
+
+        // Helper
+        function limitColor(sisa, limit) {
+            if (limit <= 0) return 'var(--slate-400)';
+            const pct = sisa / limit;
+            if (pct > 0.5) return 'var(--emerald-600)';
+            if (pct > 0.1) return 'var(--amber-500)';
+            return 'var(--rose-500)';
+        }
+
+        // Render cards
+        const grid = document.getElementById('customers-grid');
+        if (grid) {
+            grid.innerHTML = rows.map(c => {
+                const color = limitColor(c.sisaLimitPiutang ?? c.remainingLimit, c.creditLimit);
+                const pctUsed = c.creditLimit > 0 ? Math.min(100, Math.round((c.totalPiutangBerjalan ?? c.outstandingReceivables) / c.creditLimit * 100)) : 0;
+                return `
+                <div class="entity-card" style="position: relative;">
+                    <button class="btn-toolbar secondary" style="position: absolute; top: 1rem; right: 1rem; padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Edit Pelanggan" onclick="openEditCustomerModal('${c.id}')">
+                        <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                    <button class="btn-toolbar secondary" style="position: absolute; top: 1rem; right: 3rem; padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--rose-500);" title="Hapus Pelanggan" onclick="deleteCustomer('${c.id}')">
+                        <i data-lucide="trash-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                    <div class="entity-card-header" style="cursor:pointer;" onclick="openCustomerDetail('${c.id}')">
+                        <div class="entity-avatar ${c.color}">${c.name.charAt(0)}</div>
+                        <div>
+                            <div class="entity-name">${c.name}</div>
+                            <div class="entity-type">${c.type} &bull; ${c.city}</div>
+                            ${c.pricelistName ? `<div style="margin-top:0.25rem;"><span class="badge-pricelist-source" style="font-size:0.7rem; padding:0.15rem 0.4rem;">${c.pricelistName}</span></div>` : ''}
+                        </div>
+                    </div>
+                    <div class="entity-details">
+                        <div class="entity-detail">
+                            <span class="entity-detail-label">Telepon / WA</span>
+                            <span class="entity-detail-value">${c.phone}</span>
+                        </div>
+                        <div class="entity-detail">
+                            <span class="entity-detail-label">Sisa Limit Piutang</span>
+                            <span class="entity-detail-value" style="color:${color}; font-weight:700;">${rpShort(c.sisaLimitPiutang ?? c.remainingLimit)}</span>
+                        </div>
+                        <div class="entity-detail">
+                            <span class="entity-detail-label">Total Belanja</span>
+                            <span class="entity-detail-value">${rpShort(c.totalBelanja ?? c.totalSpent)}</span>
+                        </div>
+                    </div>
+                    <div style="margin-top:0.6rem;">
+                        <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:var(--slate-500);margin-bottom:3px;">
+                            <span>Limit terpakai ${pctUsed}%</span>
+                            <span>${rpShort(c.creditLimit)}</span>
+                        </div>
+                        <div style="background:var(--slate-200);border-radius:99px;height:5px;overflow:hidden;">
+                            <div style="height:100%;width:${pctUsed}%;background:${color};border-radius:99px;transition:width .4s;"></div>
+                        </div>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        // Render list
+        const listBody = document.getElementById('customers-list-body');
+        if (listBody) {
+            listBody.innerHTML = rows.map(c => {
+                const sisa = c.sisaLimitPiutang ?? c.remainingLimit;
+                const color = sisa / (c.creditLimit || 1) > 0.5
+                    ? 'var(--emerald-600)'
+                    : sisa / (c.creditLimit || 1) > 0.1
+                        ? 'var(--amber-500)'
+                        : 'var(--rose-500)';
+                return `
+                <tr style="cursor:pointer;" onclick="openCustomerDetail('${c.id}')">
+                    <td style="font-weight:600; color: var(--blue-600);">${c.id}</td>
+                    <td style="font-weight:600;">
+                        ${c.name}
+                        ${c.pricelistName ? `<div style="margin-top:0.2rem;"><span class="badge-pricelist-source" style="font-size:0.65rem; padding:0.1rem 0.35rem;">${c.pricelistName}</span></div>` : ''}
+                    </td>
+                    <td><span class="badge-status aman">${c.type}</span></td>
+                    <td>${c.city}</td>
+                    <td>${c.phone}</td>
+                    <td style="font-weight:700;">${rp(c.creditLimit)}</td>
+                    <td style="font-weight:700; color:${color}">${rp(sisa)}</td>
+                    <td style="font-weight:600;">${rp(c.totalBelanja ?? c.totalSpent)}</td>
+                    <td style="text-align: right; white-space: nowrap;" onclick="event.stopPropagation()">
+                        <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Edit Pelanggan" onclick="openEditCustomerModal('${c.id}')">
+                            <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                        </button>
+                        <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--rose-500);" title="Hapus Pelanggan" onclick="deleteCustomer('${c.id}')">
+                            <i data-lucide="trash-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                        </button>
+                    </td>
+                </tr>
+                `;
+            }).join('');
+        }
+
+        renderPagination({
+            containerId: 'pagination-customers',
+            currentPage: pg,
+            totalItems: paginationState.customers.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchCustomers(p)
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     } catch (err) {
         console.error('Failed to fetch customers', err);
     }
@@ -2312,7 +2887,8 @@ async function saveCustomer(isEdit) {
         npwp_address: document.getElementById(`${prefix}-customer-npwp-address`)?.value.trim() || null,
         nib: document.getElementById(`${prefix}-customer-nib`)?.value.trim() || null,
         email: email || null,
-        no_hp_2: document.getElementById(`${prefix}-customer-no-hp-2`)?.value.trim() || null
+        no_hp_2: document.getElementById(`${prefix}-customer-no-hp-2`)?.value.trim() || null,
+        pricelist_id: document.getElementById(`${prefix}-customer-pricelist`)?.value ? parseInt(document.getElementById(`${prefix}-customer-pricelist`).value) : null
     };
 
     const url = isEdit ? `/api/customers/${id}` : '/api/customers';
@@ -2348,6 +2924,7 @@ function openAddCustomerModal() {
     if (addrEl) addrEl.value = '';
     const typeEl = document.getElementById('add-customer-type');
     if (typeEl) typeEl.selectedIndex = 0;
+    populateCustomerPricelistDropdown('add-customer-pricelist', '');
     openModal('modal-add-customer');
 }
 
@@ -2378,6 +2955,7 @@ function openEditCustomerModal(id) {
     if (npwpAddressEl) npwpAddressEl.value = c.npwp_address || '';
     const nibEl = document.getElementById('edit-customer-nib');
     if (nibEl) nibEl.value = c.nib || '';
+    populateCustomerPricelistDropdown('edit-customer-pricelist', c.pricelistId);
     openModal('modal-edit-customer');
 }
 
@@ -2418,6 +2996,10 @@ function openCustomerDetail(id) {
     if (npwpAddressEl) npwpAddressEl.textContent = c.npwp_address || '-';
     const nibEl = document.getElementById('detail-customer-nib');
     if (nibEl) nibEl.textContent = c.nib || '-';
+    const plDetailEl = document.getElementById('detail-customer-pricelist');
+    if (plDetailEl) {
+        plDetailEl.textContent = c.pricelistName ? `${c.pricelistName} (${c.pricelistKode || '-'})` : 'Harga Standar (Master)';
+    }
 
     const sisa = c.sisaLimitPiutang ?? c.remainingLimit;
     const totalSpent = c.totalBelanja ?? c.totalSpent;
@@ -2490,11 +3072,9 @@ async function deleteCustomer(id) {
 // VENDORS — CRUD
 // ==========================================================================
 
-async function fetchVendors() {
+async function fetchVendors(page) {
     try {
-        const res = await fetch('/api/vendors', { headers: getAuthHeaders() });
-        const data = await res.json();
-        VENDORS = data.map(v => ({
+        const mapVendor = v => ({
             id: v.id,
             name: v.name,
             category: v.category_name || v.vendor_category_id || '',
@@ -2508,7 +3088,12 @@ async function fetchVendors() {
             idNumber: String(v.id_number || ''),
             totalPurchases: parseFloat(v.total_purchases) || 0,
             debt: parseFloat(v.outstanding_debt) || parseFloat(v.debt) || 0
-        }));
+        });
+
+        // Fetch all for dropdowns
+        const resAll = await fetch('/api/vendors?all=true', { headers: getAuthHeaders() });
+        const dataAll = await resAll.json();
+        VENDORS = (Array.isArray(dataAll) ? dataAll : []).map(mapVendor);
 
         // Populate vendor dropdowns in PO modals
         const vendorOptions = '<option value="" disabled selected>- Pilih Vendor -</option>' +
@@ -2518,7 +3103,79 @@ async function fetchVendors() {
         const editVendorEl = document.getElementById('edit-purchase-vendor');
         if (editVendorEl) editVendorEl.innerHTML = vendorOptions;
 
-        renderVendors(document.getElementById('vendor-search')?.value);
+        // Paginated fetch for table
+        if (page !== undefined) paginationState.vendors.page = page;
+        const q = document.getElementById('vendor-search')?.value || '';
+        const pg = paginationState.vendors.page;
+        let url = '/api/vendors?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = (json.data || []).map(mapVendor);
+        const pag = json.pagination || {};
+        paginationState.vendors.total = pag.total || 0;
+        paginationState.vendors.totalPages = pag.totalPages || 1;
+
+        const grid = document.getElementById('vendors-grid');
+        const listBody = document.getElementById('vendors-list-body');
+
+        if (grid) {
+            grid.innerHTML = rows.map(v => `
+            <div class="entity-card" style="position: relative;">
+                <button class="btn-toolbar secondary" style="position: absolute; top: 1rem; right: 1rem; padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Edit Vendor" onclick="openEditVendorModal('${v.id}')">
+                    <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                </button>
+                <div class="entity-card-header">
+                    <div class="entity-avatar blue">${v.name.charAt(0)}</div>
+                    <div>
+                        <div class="entity-name">${v.name}</div>
+                        <div class="entity-type">${v.category} &middot; ${v.city}</div>
+                    </div>
+                </div>
+                <div class="entity-details">
+                    <div class="entity-detail">
+                        <span class="entity-detail-label">ID Vendor</span>
+                        <span class="entity-detail-value">${v.id || 'V0XX'}</span>
+                    </div>
+                    <div class="entity-detail">
+                        <span class="entity-detail-label">Telepon / WA</span>
+                        <span class="entity-detail-value">${v.phone}</span>
+                    </div>
+                    <div class="entity-detail">
+                        <span class="entity-detail-label">Total Pembelian</span>
+                        <span class="entity-detail-value">${rpShort(v.totalPurchases)}</span>
+                    </div>
+                </div>
+            </div>`).join('');
+        }
+
+        if (listBody) {
+            listBody.innerHTML = rows.map(v => `
+            <tr>
+                <td style="font-weight:600;">${v.id || '-'}</td>
+                <td style="font-weight:600;">${v.name}</td>
+                <td>${v.category}</td>
+                <td>${v.city}</td>
+                <td>${v.phone}</td>
+                <td style="font-weight:700;">${rp(v.totalPurchases)}</td>
+                <td style="text-align:right; white-space:nowrap;">
+                    <button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem;font-size:0.75rem;" title="Edit Vendor" onclick="openEditVendorModal('${v.id}')">
+                        <i data-lucide="edit-2" style="width:14px;height:14px;margin:0;"></i>
+                    </button>
+                </td>
+            </tr>`).join('');
+        }
+
+        renderPagination({
+            containerId: 'pagination-vendors',
+            currentPage: pg,
+            totalItems: paginationState.vendors.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchVendors(p)
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     } catch (err) {
         console.error('Failed to fetch vendors', err);
     }
@@ -2610,16 +3267,67 @@ async function deleteVendor(id) {
 // PURCHASE ORDERS — CRUD
 // ==========================================================================
 
-async function fetchPurchases() {
+async function fetchPurchases(page) {
     try {
-        const res = await fetch(`/api/purchases?_t=${Date.now()}`, { headers: getAuthHeaders() });
-        const data = await res.json();
-        if (!res.ok || data.error) {
+        // Full data for Hutang computation (unpaginated)
+        const resAll = await fetch('/api/purchases?all=true', { headers: getAuthHeaders() });
+        const dataAll = await resAll.json();
+        if (!resAll.ok || (dataAll && dataAll.error)) {
             showToast('Gagal memuat data purchase, coba lagi.', 'error');
             return;
         }
-        PURCHASES = data;
-        renderPurchases();
+        PURCHASES = Array.isArray(dataAll) ? dataAll : [];
+
+        // Paginated for table
+        if (page !== undefined) paginationState.purchases.page = page;
+        const q = document.getElementById('purchase-search')?.value || '';
+        const status = document.getElementById('purchase-status-filter')?.value || 'all';
+        const pg = paginationState.purchases.page;
+        let url = '/api/purchases?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (status && status !== 'all') url += '&status=' + encodeURIComponent(status);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+        paginationState.purchases.total = pag.total || 0;
+        paginationState.purchases.totalPages = pag.totalPages || 1;
+
+        const tbody = document.getElementById('purchases-body');
+        if (tbody) {
+            tbody.innerHTML = rows.map(p => `
+            <tr>
+                <td style="font-weight:600; color: var(--blue-600);">${p.id}</td>
+                <td>${p.date}</td>
+                <td>${p.vendor}</td>
+                <td style="font-weight:700;">${rp(p.total)}</td>
+                <td>${rp(p.paid)}</td>
+                <td>${p.type}</td>
+                <td><span class="badge-status ${p.status.toLowerCase()}">${capitalize(p.status)}</span></td>
+                <td style="text-align: right; white-space: nowrap;">
+                    <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Cetak PO" onclick="openModal('modal-print-po')">
+                        <i data-lucide="printer" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                    <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Edit PO" onclick="openEditPurchaseModal('${p.id}')">
+                        <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>
+                    ${p.status.toLowerCase() !== 'batal' ? `<button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--rose-500);" title="Batalkan PO" onclick="cancelPurchase('${p.id}')">
+                        <i data-lucide="x-circle" style="width: 14px; height: 14px; margin: 0;"></i>
+                    </button>` : ''}
+                </td>
+            </tr>`).join('');
+        }
+
+        renderPagination({
+            containerId: 'pagination-purchases',
+            currentPage: pg,
+            totalItems: paginationState.purchases.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchPurchases(p)
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     } catch (err) {
         console.error('Failed to fetch purchases', err);
         showToast('Gagal memuat data purchase, coba lagi.', 'error');
@@ -2968,24 +3676,185 @@ async function savePurchase(isEdit) {
 // INVOICES — CRUD
 // ==========================================================================
 
-async function fetchInvoices() {
+async function fetchInvoices(page) {
     try {
-        // FIX: correct endpoint is /api/invoices not /api/sales; cache buster prevents stale data after checkout
-        const res = await fetch(`/api/invoices?_t=${Date.now()}`, { headers: getAuthHeaders() });
-        const data = await res.json();
-        if (!res.ok || data.error) {
+        // Full data for summary cards, charts, recent transactions (unpaginated)
+        const resAll = await fetch(`/api/invoices?all=true&_t=${Date.now()}`, { headers: getAuthHeaders() });
+        const dataAll = await resAll.json();
+        if (!resAll.ok || (dataAll && dataAll.error)) {
             showToast('Gagal memuat data invoice, coba lagi.', 'error');
             return;
         }
-        INVOICES = data;
-        renderInvoices();
-        renderPiutang();
+        INVOICES = Array.isArray(dataAll) ? dataAll : [];
         renderSummaryCards();
         renderRecentTransactions();
         refreshCharts();
+
+        // Paginated fetch for invoices table
+        if (page !== undefined) paginationState.invoices.page = page;
+        const q = document.getElementById('invoice-search')?.value || '';
+        const status = document.getElementById('invoice-status-filter')?.value || 'all';
+        const pg = paginationState.invoices.page;
+        let url = '/api/invoices?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (status && status !== 'all') url += '&status=' + encodeURIComponent(status);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+        paginationState.invoices.total = pag.total || 0;
+        paginationState.invoices.totalPages = pag.totalPages || 1;
+
+        const today = new Date().toISOString().split('T')[0];
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        const canEdit = role === 'admin' || role === 'finance';
+        const tbody = document.getElementById('invoices-body');
+        if (tbody) {
+            tbody.innerHTML = rows.map(inv => {
+                const statusLower = (inv.status || '').toLowerCase();
+                const sisa = inv.total - inv.paid;
+                const isOverdue = sisa > 0 && inv.dueDate && inv.dueDate < today;
+                const overdueBadge = isOverdue ? '<span class="badge-status overdue" style="margin-left:4px; font-size:0.7rem; padding:2px 7px;">Lewat JT</span>' : '';
+                return `
+                <tr>
+                    <td style="font-weight:600; color: var(--blue-600);">${inv.id}</td>
+                    <td>${inv.date}</td>
+                    <td style="font-weight:600;">${inv.customer || '-'}${overdueBadge}</td>
+                    <td style="font-weight:700;">${rp(inv.total)}</td>
+                    <td>${rp(inv.paid)}</td>
+                    <td>${inv.type || '-'}</td>
+                    <td><span class="badge-status ${statusLower.includes('belum') ? 'belum' : statusLower.replace(/\s+/g, '-')}">${capitalize(inv.status)}</span></td>
+                    <td style="text-align: right; white-space: nowrap;">
+                        <button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Cetak Invoice" onclick="printInvoice('${inv.id}')">
+                            <i data-lucide="printer" style="width: 14px; height: 14px; margin: 0;"></i>
+                        </button>
+                        ${canEdit ? `<button class="btn-toolbar secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-right: 0.25rem;" title="Edit Invoice" onclick="openEditInvoiceModal('${inv.id}')">
+                            <i data-lucide="edit-2" style="width: 14px; height: 14px; margin: 0;"></i>
+                        </button>` : ''}
+                        ${statusLower !== 'lunas' && statusLower !== 'batal' ? `<button class="btn-toolbar primary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="openPiutangPaymentModal('${inv.id}', ${sisa})">Bayar</button>` : ''}
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        renderPagination({
+            containerId: 'pagination-invoices',
+            currentPage: pg,
+            totalItems: paginationState.invoices.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchInvoices(p)
+        });
+
+        // Also refresh piutang
+        if (typeof fetchPiutang === 'function') fetchPiutang(paginationState.piutang.page);
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     } catch (err) {
         console.error('Failed to fetch invoices', err);
         showToast('Gagal memuat data invoice, coba lagi.', 'error');
+    }
+}
+
+async function fetchPiutang(page) {
+    try {
+        if (page !== undefined) paginationState.piutang.page = page;
+        const q = document.getElementById('piutang-search')?.value || '';
+        const status = document.getElementById('piutang-status-filter')?.value || 'all';
+        const custFilter = document.getElementById('piutang-customer-filter')?.value || 'all';
+        const pg = paginationState.piutang.page;
+        let url = '/api/finance/receivables?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (q) url += '&q=' + encodeURIComponent(q);
+        if (status && status !== 'all') url += '&status=' + encodeURIComponent(status);
+        if (custFilter && custFilter !== 'all') url += '&customer_id=' + encodeURIComponent(custFilter);
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+        const summary = json.summary || {};
+        paginationState.piutang.total = pag.total || 0;
+        paginationState.piutang.totalPages = pag.totalPages || 1;
+
+        // Summary cards from server (full filtered dataset)
+        const summEl = document.getElementById('piutang-summary');
+        if (summEl) {
+            summEl.innerHTML =
+                '<div class="finance-summary-card highlight">' +
+                    '<div class="fs-value">' + rp(parseFloat(summary.total_piutang || 0)) + '</div>' +
+                    '<div class="fs-label">Total Piutang</div>' +
+                '</div>' +
+                '<div class="finance-summary-card">' +
+                    '<div class="fs-value" style="color:var(--rose-500);">' + rp(parseFloat(summary.belum_bayar || 0)) + '</div>' +
+                    '<div class="fs-label">Belum Dibayar</div>' +
+                '</div>' +
+                '<div class="finance-summary-card">' +
+                    '<div class="fs-value" style="color:var(--amber-500);">' + rp(parseFloat(summary.sebagian || 0)) + '</div>' +
+                    '<div class="fs-label">Dibayar Sebagian</div>' +
+                '</div>';
+        }
+
+        // Populate customer filter dropdown
+        const custFilterEl = document.getElementById('piutang-customer-filter');
+        if (custFilterEl && INVOICES.length > 0) {
+            const selectedCust = custFilterEl.value;
+            const uniqueCustomers = [...new Map(
+                INVOICES.filter(i => i.customer).map(i => [String(i.customerId), i.customer])
+            ).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+            custFilterEl.innerHTML = '<option value="all">Semua Pelanggan</option>' +
+                uniqueCustomers.map(([cid, cname]) =>
+                    '<option value="' + cid + '" ' + (selectedCust === cid ? 'selected' : '') + '>' + cname + '</option>'
+                ).join('');
+        }
+
+        const today = new Date().toISOString().split('T')[0];
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        const canPayOrVoid = role === 'admin' || role === 'finance';
+
+        const tbody = document.getElementById('piutang-body');
+        if (!tbody) return;
+        tbody.innerHTML = rows.map(inv => {
+            const sisa = inv.total - inv.paid;
+            const isOverdue = sisa > 0 && inv.dueDate && inv.dueDate < today;
+            const statusLower = (inv.status || '').toLowerCase();
+            const overdueBadge = isOverdue
+                ? '<span class="badge-status overdue" style="display:inline-flex;align-items:center;gap:3px;font-size:0.7rem;padding:2px 7px;margin-left:4px;vertical-align:middle;"><i data-lucide=\"clock\" style=\"width:11px;height:11px;\"></i> Lewat JT</span>'
+                : '';
+            let actionButtons;
+            if (canPayOrVoid) {
+                const bayarBtn = statusLower !== 'lunas'
+                    ? `<button class="btn-toolbar primary" style="padding:0.25rem 0.5rem;font-size:0.75rem;" onclick="openPiutangPaymentModal('${inv.id}', ${sisa})">Bayar</button>`
+                    : '<span style="color:var(--gray-400);font-size:0.8rem;">Lunas</span>';
+                actionButtons = `<button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem;font-size:0.75rem;margin-right:0.25rem;" title="Riwayat Cicilan" onclick="openPaymentHistoryModal('${inv.id}')"><i data-lucide="list" style="width:13px;height:13px;margin:0;"></i></button>${bayarBtn}`;
+            } else {
+                actionButtons = '<span style="color:var(--gray-400);font-size:0.8rem;">Lihat Saja</span>';
+            }
+            return `
+            <tr>
+                <td style="font-weight:600; color:var(--blue-600);">${inv.id}</td>
+                <td>${inv.customer || '-'}</td>
+                <td style="font-weight:700;">${rp(inv.total)}</td>
+                <td>${rp(inv.paid)}</td>
+                <td style="font-weight:700; color:${sisa > 0 ? 'var(--rose-500)' : 'var(--emerald-500)'};">${rp(sisa)}</td>
+                <td>${inv.dueDate || '-'}${overdueBadge}</td>
+                <td>${statusLower.includes('belum') ? '-' : (inv.paidDate || '-')}</td>
+                <td>${statusLower.includes('belum') ? '-' : (inv.type || '-')}</td>
+                <td><span class="badge-status ${statusLower.includes('belum') ? 'belum' : statusLower.replace(/\s+/g, '-')}">${capitalize(inv.status)}</span></td>
+                <td style="text-align:right; white-space:nowrap;">${actionButtons}</td>
+            </tr>`;
+        }).join('');
+
+        renderPagination({
+            containerId: 'pagination-piutang',
+            currentPage: pg,
+            totalItems: paginationState.piutang.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchPiutang(p)
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (err) {
+        console.error('Failed to fetch piutang', err);
     }
 }
 
@@ -3050,8 +3919,16 @@ function renderEditInvoiceItems() {
         container.innerHTML = `<tr><td colspan="${colspan}" style="text-align: center; padding: 1rem; color: var(--gray-500);">Belum ada item.</td></tr>`;
     }
 
-    const ppn = subtotal * 0.11;
+    const ppnActive = (typeof currentPpnEnabled !== 'undefined') ? currentPpnEnabled : true;
+    const ppnRateEff = (typeof currentPpnRate !== 'undefined') ? currentPpnRate : 11;
+    const ppn = ppnActive ? Math.round(subtotal * (ppnRateEff / 100)) : 0;
     const grandTotal = subtotal + ppn;
+
+    // Show/hide PPN row in edit invoice modal based on settings
+    const ppnRowEl = document.getElementById('edit-invoice-ppn-row');
+    if (ppnRowEl) ppnRowEl.style.display = ppnActive ? '' : 'none';
+    const ppnLabelEl = document.getElementById('edit-invoice-ppn-label');
+    if (ppnLabelEl) ppnLabelEl.textContent = `(${ppnRateEff}%)`;
 
     document.getElementById('edit-invoice-subtotal').textContent = rp(subtotal);
     document.getElementById('edit-invoice-ppn').textContent = rp(ppn);
@@ -3155,6 +4032,8 @@ async function openEditInvoiceModal(id) {
     openModal('modal-edit-invoice');
 }
 
+let pendingSaveInvoicePayload = null;
+
 async function saveInvoiceEdits() {
     const id = document.getElementById('edit-invoice-id').value;
     if (!id) return;
@@ -3165,33 +4044,62 @@ async function saveInvoiceEdits() {
     const inv = INVOICES.find(x => x.id === id);
     const customer_id = inv ? inv.customerId : null;
 
-    const subtotal = editInvoiceItems.reduce((s, i) => s + (parseFloat(i.price) * parseInt(i.quantity)), 0);
-    const total = subtotal * 1.11; // including 11% tax
+    const subtotal = editInvoiceItems.reduce((s, i) => s + (parseFloat(i.price || i.sell_price || 0) * parseInt(i.quantity || i.qty || 0)), 0);
+    const ppnRate = (typeof currentPpnEnabled !== 'undefined' && !currentPpnEnabled) ? 0 : ((typeof currentPpnRate !== 'undefined' ? currentPpnRate : 11) / 100);
+    const newTotal = subtotal + Math.round(subtotal * ppnRate);
 
-    // Determine paid amount based on old paid amount. If it was fully paid, should we adjust paid amount?
-    // Let's assume paid_amount stays the same unless it exceeds new total.
-    let paid_amount = inv ? inv.paid : 0;
-    if (status === 'lunas') {
-        paid_amount = total;
-    } else if (status === 'belum') {
-        paid_amount = 0;
-    } else {
-        if (paid_amount > total) paid_amount = total;
+    const paidAmount = inv ? parseFloat(inv.paid || 0) : 0;
+
+    // Soft-lock Guard: new total must not be smaller than active payments received
+    if (paidAmount > 0 && newTotal < paidAmount) {
+        showToast(`Total invoice baru (${rp(newTotal)}) tidak boleh lebih kecil dari pembayaran yang sudah diterima (${rp(paidAmount)}).`, 'warning');
+        return;
     }
+
+    pendingSaveInvoicePayload = {
+        id,
+        date,
+        status,
+        customer_id,
+        total: newTotal,
+        paid_amount: paidAmount,
+        payment_type_id: inv ? inv.paymentTypeId : 'PT-1',
+        items: editInvoiceItems
+    };
+
+    // If invoice already has active payments, trigger the soft-lock confirmation modal
+    if (paidAmount > 0) {
+        const statsEl = document.getElementById('confirm-edit-invoice-stats');
+        if (statsEl) {
+            const sisaBaru = Math.max(0, newTotal - paidAmount);
+            statsEl.innerHTML = `
+                <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                    <span>Total Baru:</span> <b>${rp(newTotal)}</b>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: var(--emerald-600);">
+                    <span>Total Pembayaran Diterima:</span> <b>${rp(paidAmount)}</b>
+                </div>
+                <div style="display: flex; justify-content: space-between; color: ${sisaBaru > 0 ? 'var(--rose-600)' : 'var(--emerald-600)'};">
+                    <span>Sisa Tagihan Baru:</span> <b>${rp(sisaBaru)}</b>
+                </div>
+            `;
+        }
+        openModal('modal-confirm-edit-invoice');
+    } else {
+        await executeSaveInvoiceEdits();
+    }
+}
+
+async function executeSaveInvoiceEdits() {
+    if (!pendingSaveInvoicePayload) return;
+    const { id, ...bodyData } = pendingSaveInvoicePayload;
+    closeModal('modal-confirm-edit-invoice');
 
     try {
         const res = await fetch(`/api/invoices/${encodeURIComponent(id)}`, {
             method: 'PUT',
             headers: getAuthHeaders(),
-            body: JSON.stringify({
-                date,
-                status,
-                customer_id,
-                total,
-                paid_amount,
-                payment_type_id: inv ? inv.paymentTypeId : 'PT-1',
-                items: editInvoiceItems
-            })
+            body: JSON.stringify(bodyData)
         });
         if (res.ok) {
             closeModal('modal-edit-invoice');
@@ -3213,6 +4121,8 @@ async function saveInvoiceEdits() {
     } catch (err) {
         console.error(err);
         showToast('Gagal menghubungi server', 'error');
+    } finally {
+        pendingSaveInvoicePayload = null;
     }
 }
 
@@ -3220,6 +4130,27 @@ let cancelInvoiceId = null;
 
 async function cancelInvoice(id) {
     cancelInvoiceId = id;
+    const inv = INVOICES.find(x => x.id === id);
+    const paidAmount = inv ? parseFloat(inv.paid || 0) : 0;
+    const alertEl = document.getElementById('cancel-invoice-payments-alert');
+    const textEl = document.getElementById('cancel-invoice-payments-text');
+    const btnConfirm = document.getElementById('btn-confirm-cancel-invoice');
+
+    if (paidAmount > 0) {
+        if (alertEl) alertEl.style.display = 'block';
+        if (textEl) {
+            textEl.innerHTML = `Invoice ini memiliki pembayaran aktif sebesar <b>${rp(paidAmount)}</b>. Membatalkan invoice akan <b>otomatis membatalkan (void) semua pembayaran</b> dan membalikkan posting kas. Lanjutkan?`;
+        }
+        if (btnConfirm) {
+            btnConfirm.innerHTML = '<i data-lucide="x-circle"></i> Ya, Batalkan & Void Pembayaran';
+        }
+    } else {
+        if (alertEl) alertEl.style.display = 'none';
+        if (btnConfirm) {
+            btnConfirm.innerHTML = '<i data-lucide="x-circle"></i> Ya, Batalkan';
+        }
+    }
+    if (typeof lucide !== 'undefined') lucide.createIcons();
     openModal('modal-cancel-invoice');
 }
 
@@ -3291,12 +4222,86 @@ window.cancelPurchaseFromEdit = () => {
 // CASH FLOW — CRUD
 // ==========================================================================
 
-async function fetchCashTransactions() {
+async function fetchCashTransactions(page) {
     try {
-        const res = await fetch('/api/finance/cash-flow', { headers: getAuthHeaders() });
-        const data = await res.json();
-        CASH_TRANSACTIONS = data;
-        renderCashFlow();
+        // Full data for CASH_TRANSACTIONS global cache
+        const resAll = await fetch('/api/finance/cash-flow?all=true', { headers: getAuthHeaders() });
+        const dataAll = await resAll.json();
+        CASH_TRANSACTIONS = Array.isArray(dataAll) ? dataAll : [];
+
+        // Paginated fetch for table
+        if (page !== undefined) paginationState.cashflow.page = page;
+        const typeFilter = currentCashFlowFilter || 'all';
+        const pg = paginationState.cashflow.page;
+        let url = '/api/finance/cash-flow?page=' + pg + '&limit=' + PAGE_SIZE;
+        if (typeFilter && typeFilter !== 'all') url += '&type=' + encodeURIComponent(typeFilter.toUpperCase());
+
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        const json = await res.json();
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+        const summary = json.summary || {};
+        paginationState.cashflow.total = pag.total || 0;
+        paginationState.cashflow.totalPages = pag.totalPages || 1;
+
+        // Summary from server (full dataset)
+        const summEl = document.getElementById('cashflow-summary');
+        if (summEl) {
+            const totalIn = parseFloat(summary.total_in || 0);
+            const totalOut = parseFloat(summary.total_out || 0);
+            const net = parseFloat(summary.net || 0);
+            summEl.innerHTML = `
+            <div class="finance-summary-card">
+                <div class="fs-value" style="color: var(--emerald-500);">${rp(totalIn)}</div>
+                <div class="fs-label">Total Kas Masuk</div>
+            </div>
+            <div class="finance-summary-card">
+                <div class="fs-value" style="color: var(--rose-500);">${rp(totalOut)}</div>
+                <div class="fs-label">Total Kas Keluar</div>
+            </div>
+            <div class="finance-summary-card highlight">
+                <div class="fs-value">${rp(net)}</div>
+                <div class="fs-label">Saldo Bersih</div>
+            </div>`;
+        }
+
+        const tbody = document.getElementById('cashflow-body');
+        if (tbody) {
+            tbody.innerHTML = rows.map(t => {
+                const isCancelled = t.status === 'cancelled';
+                const isManual = t.isManual && t.category !== 'Penyesuaian Stok';
+                const rowStyle = isCancelled ? 'opacity:0.55; text-decoration: line-through;' : '';
+                const actionBtns = isCancelled ? '<span class="badge-status batal" style="font-size:0.7rem;">Dibatalkan</span>' : `
+                    ${isManual ? `<button class="btn-toolbar secondary" style="padding:0.2rem 0.45rem; font-size:0.72rem; margin-right:0.2rem;" title="Edit" onclick="openEditCashModal('${t.id}')"><i data-lucide="edit-2" style="width:13px;height:13px;margin:0;"></i></button>` : ''}
+                    <button class="btn-toolbar secondary" style="padding:0.2rem 0.45rem; font-size:0.72rem; color:var(--rose-500);" title="${isManual ? 'Hapus' : 'Void/Batal'}" onclick="cancelCashTransaction('${t.id}')"><i data-lucide="x-circle" style="width:13px;height:13px;margin:0;"></i></button>
+                `;
+                const runBal = (t.running_balance !== undefined && t.running_balance !== null)
+                    ? '<span style=\"font-weight:600; color:' + (t.running_balance >= 0 ? 'var(--emerald-600)' : 'var(--rose-600)') + ';\">' + rp(t.running_balance) + '</span>'
+                    : '-';
+                return `
+                <tr style="${rowStyle}">
+                    <td>${t.date}</td>
+                    <td style="font-weight:600;">${t.desc}</td>
+                    <td><span class="badge-status ${t.category === 'Penjualan' || t.category === 'Piutang' ? 'lunas' : 'tempo'}">${t.category}</span></td>
+                    <td><span class="badge-status ${t.type.toLowerCase()}">${t.type === 'IN' ? 'Masuk' : 'Keluar'}</span></td>
+                    <td style="font-weight:700; color: ${t.type === 'IN' ? 'var(--emerald-500)' : 'var(--rose-500)'};">${t.type === 'IN' ? '+' : '-'}${rp(t.amount)}</td>
+                    <td>${runBal}</td>
+                    <td><span class="badge-status ${t.status === 'cancelled' ? 'batal' : 'lunas'}">${t.status === 'cancelled' ? 'Dibatalkan' : 'Aktif'}</span></td>
+                    <td>${t.method}</td>
+                    <td style="text-align:right; white-space:nowrap;">${actionBtns}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        renderPagination({
+            containerId: 'pagination-cashflow',
+            currentPage: pg,
+            totalItems: paginationState.cashflow.total,
+            pageSize: PAGE_SIZE,
+            onPageChange: (p) => fetchCashTransactions(p)
+        });
+
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     } catch (err) {
         console.error('Failed to fetch cash flow', err);
     }
@@ -3431,14 +4436,34 @@ function openHutangPaymentModal(poId, sisa) {
     openModal('modal-payment');
 }
 
-// FIX: helper to open piutang payment modal with correct invoice id pre-filled
+// Open piutang payment modal — fills invoice info box, date, and max hint
 function openPiutangPaymentModal(invoiceId, sisa) {
     const typeEl = document.getElementById('payment-type');
     const refEl = document.getElementById('payment-ref-id');
     const amtEl = document.getElementById('payment-amount');
+    const dateEl = document.getElementById('payment-date');
+    const maxHint = document.getElementById('payment-max-hint');
+    const infoBox = document.getElementById('payment-invoice-info-box');
+    const notesEl = document.getElementById('payment-notes');
     if (typeEl) typeEl.value = 'receivable';
     if (refEl) refEl.value = invoiceId;
-    if (amtEl) amtEl.value = sisa || '';
+    if (amtEl) { amtEl.value = ''; amtEl.max = sisa || ''; }
+    if (notesEl) notesEl.value = '';
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (dateEl) { dateEl.value = todayStr; dateEl.max = todayStr; }
+    if (maxHint) maxHint.textContent = 'Maks: ' + rp(sisa || 0) + ' (sisa tagihan)';
+    const inv = INVOICES.find(i => i.id === invoiceId);
+    if (infoBox) {
+        infoBox.style.display = 'block';
+        const infoId = document.getElementById('payment-info-id');
+        const infoCust = document.getElementById('payment-info-customer');
+        const infoTotal = document.getElementById('payment-info-total');
+        const infoSisa = document.getElementById('payment-info-sisa');
+        if (infoId) infoId.textContent = invoiceId;
+        if (infoCust) infoCust.textContent = inv ? inv.customer : '-';
+        if (infoTotal) infoTotal.textContent = inv ? rp(inv.total) : '-';
+        if (infoSisa) infoSisa.textContent = rp(sisa || 0);
+    }
     openModal('modal-payment');
 }
 
@@ -3449,23 +4474,27 @@ async function submitPayment() {
     const amount = document.getElementById('payment-amount').value;
     const methodEl = document.getElementById('payment-method');
     const method = methodEl ? methodEl.value : 'Transfer Bank';
-
-    if (!id || !amount || parseFloat(amount) <= 0) {
-        showToast('ID dan jumlah pembayaran wajib diisi!', 'warning');
-        return;
-    }
-
-    // FIX: use correct endpoints
+    const dateEl = document.getElementById('payment-date');
+    const notesEl = document.getElementById('payment-notes');
+    const paymentDate = dateEl ? dateEl.value : new Date().toISOString().split('T')[0];
+    const notes = notesEl ? notesEl.value.trim() : '';
+    if (!id) { showToast('Referensi invoice tidak ditemukan!', 'warning'); return; }
+    if (!amount || parseFloat(amount) <= 0) { showToast('Jumlah pembayaran wajib diisi dan > 0!', 'warning'); return; }
+    if (!paymentDate) { showToast('Tanggal pembayaran wajib diisi!', 'warning'); return; }
+    const today = new Date().toISOString().split('T')[0];
+    if (paymentDate > today) { showToast('Tanggal pembayaran tidak boleh di masa depan!', 'warning'); return; }
     const url = isReceivable
-        ? `/api/finance/receivables/${encodeURIComponent(id)}/pay`
-        : `/api/finance/payables/${encodeURIComponent(id)}/pay`;
-
+        ? '/api/invoices/' + encodeURIComponent(id) + '/payments'
+        : '/api/finance/payables/' + encodeURIComponent(id) + '/pay';
+    const body = isReceivable
+        ? { amount: parseFloat(amount), payment_date: paymentDate, payment_method: method, notes }
+        : { amount: parseFloat(amount), payment_type_id: method };
     let paymentSuccess = false;
     try {
         const res = await fetch(url, {
             method: 'POST',
             headers: getAuthHeaders(),
-            body: JSON.stringify({ amount: parseFloat(amount), payment_type_id: method })
+            body: JSON.stringify(body)
         });
         if (res.ok) {
             paymentSuccess = true;
@@ -3477,8 +4506,8 @@ async function submitPayment() {
                 const errData = await res.json();
                 if (errData.error) errMsg = errData.error;
             } catch (e) {
-                if (res.status === 401 || res.status === 403) errMsg = 'Sesi habis, silakan login ulang.';
-                else errMsg = `Error ${res.status} dari server.`;
+                if (res.status === 401 || res.status === 403) errMsg = 'Akses ditolak. Hanya Admin/Finance yang bisa mencatat pembayaran.';
+                else errMsg = 'Error ' + res.status + ' dari server.';
             }
             showToast('Error: ' + errMsg, 'error');
             if (res.status === 401 || res.status === 403) setTimeout(() => window.location.reload(), 1500);
@@ -3488,7 +4517,6 @@ async function submitPayment() {
         showToast('Gagal mengirim data pembayaran ke server', 'error');
         return;
     }
-
     if (paymentSuccess) {
         try {
             if (isReceivable) {
@@ -3507,6 +4535,151 @@ async function submitPayment() {
     }
 }
 
+
+// Fill the payment amount field with full remaining balance
+function fillFullPayment() {
+    const amtEl = document.getElementById('payment-amount');
+    if (!amtEl) return;
+    const max = parseFloat(amtEl.max) || 0;
+    if (max > 0) { amtEl.value = max; return; }
+    const sisaText = document.getElementById('payment-info-sisa')?.textContent || '';
+    const numStr = sisaText.replace(/[^0-9]/g, '');
+    if (numStr) amtEl.value = parseInt(numStr, 10);
+}
+
+// State for void/history modals
+let _voidPaymentId = null;
+let _voidInvoiceId = null;
+
+// Open payment history modal and fetch cicilan list
+async function openPaymentHistoryModal(invoiceId) {
+    _voidInvoiceId = invoiceId;
+    const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+    const canVoid = role === 'admin' || role === 'finance';
+    const subtitleEl = document.getElementById('hist-invoice-subtitle');
+    const totalEl = document.getElementById('hist-total-display');
+    const paidEl = document.getElementById('hist-paid-display');
+    const sisaEl = document.getElementById('hist-sisa-display');
+    const dueEl = document.getElementById('hist-due-display');
+    const overdueBadgeWrap = document.getElementById('hist-overdue-badge-wrap');
+    const tbody = document.getElementById('hist-payments-body');
+    const footerLeft = document.getElementById('hist-footer-left');
+    if (subtitleEl) subtitleEl.textContent = 'Memuat...';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--gray-400);">Memuat data...</td></tr>';
+    if (footerLeft) footerLeft.style.display = canVoid ? '' : 'none';
+    openModal('modal-payment-history');
+    try {
+        const res = await fetch('/api/invoices/' + encodeURIComponent(invoiceId) + '/payments', { headers: getAuthHeaders() });
+        if (!res.ok) {
+            const err = await res.json();
+            if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--rose-500);">' + (err.error || 'Gagal memuat data') + '</td></tr>';
+            return;
+        }
+        const data = await res.json();
+        const inv = data.invoice;
+        const payments = data.payments || [];
+        if (subtitleEl) subtitleEl.textContent = 'Invoice: ' + inv.id + ' — ' + inv.customer;
+        if (totalEl) totalEl.textContent = rp(inv.total);
+        if (paidEl) paidEl.textContent = rp(inv.paid);
+        if (sisaEl) sisaEl.textContent = rp(inv.sisa);
+        if (dueEl) dueEl.textContent = inv.dueDate || '-';
+        if (overdueBadgeWrap) {
+            overdueBadgeWrap.innerHTML = inv.isOverdue
+                ? '<span class="badge-status overdue" style="display:inline-flex;align-items:center;gap:3px;font-size:0.7rem;padding:2px 7px;"><i data-lucide="clock" style="width:11px;height:11px;"></i> Lewat Jatuh Tempo</span>'
+                : '';
+        }
+        if (payments.length === 0) {
+            if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--gray-400);">Belum ada pembayaran tercatat.</td></tr>';
+        } else if (tbody) {
+            tbody.innerHTML = payments.map(p => {
+                const isVoid = p.status === 'void';
+                const rowStyle = isVoid ? 'opacity:0.55;' : '';
+                const statusBadge = isVoid
+                    ? '<span class="badge-status batal" style="font-size:0.72rem;">Void</span>'
+                    : '<span class="badge-status lunas" style="font-size:0.72rem;">Aktif</span>';
+                const dpBadge = p.isDownPayment ? '<span class="badge-dp" style="font-size:0.68rem;margin-left:4px;">DP</span>' : '';
+                const voidBtn = (canVoid && !isVoid)
+                    ? '<button class="btn-toolbar secondary" style="padding:0.2rem 0.4rem;font-size:0.72rem;color:var(--rose-600);" title="Void Pembayaran" onclick="openVoidPaymentModal(' + p.id + ',\'' + p.paymentNo + '\',' + p.amount + ',\'' + p.date + '\')"><i data-lucide="trash-2" style="width:12px;height:12px;margin:0;"></i></button>'
+                    : '';
+                const voidInfo = (isVoid && p.voidReason)
+                    ? '<div style="font-size:0.7rem;color:var(--rose-600);margin-top:2px;">Alasan: ' + p.voidReason + '</div>'
+                    : '';
+                return '<tr style="' + rowStyle + '">' +
+                    '<td style="font-size:0.8rem;">' + (p.paymentNo || '-') + dpBadge + '</td>' +
+                    '<td style="font-size:0.8rem;">' + (p.date || '-') + '</td>' +
+                    '<td style="font-weight:700;font-size:0.85rem;">' + rp(p.amount) + '</td>' +
+                    '<td style="font-size:0.8rem;">' + (p.method || '-') + '</td>' +
+                    '<td style="font-size:0.8rem;">' + (p.isDownPayment ? 'Down Payment' : 'Cicilan') + '</td>' +
+                    '<td style="font-size:0.8rem;">' + (p.notes || '-') + '</td>' +
+                    '<td>' + statusBadge + voidInfo + '</td>' +
+                    '<td style="font-size:0.75rem;color:var(--gray-500);">' + (p.createdBy || '-') + '</td>' +
+                    '<td style="text-align:right;">' + voidBtn + '</td>' +
+                    '</tr>';
+            }).join('');
+        }
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (err) {
+        console.error('Error loading payment history', err);
+        if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--rose-500);">' + err.message + '</td></tr>';
+    }
+}
+
+// Called from payment history modal footer button
+function triggerPayFromHistory() {
+    if (!_voidInvoiceId) return;
+    const inv = INVOICES.find(i => i.id === _voidInvoiceId);
+    const sisa = inv ? (inv.total - inv.paid) : 0;
+    closeModal('modal-payment-history');
+    openPiutangPaymentModal(_voidInvoiceId, sisa);
+}
+
+// Open void payment confirmation modal
+function openVoidPaymentModal(paymentId, paymentNo, amount, date) {
+    _voidPaymentId = paymentId;
+    const noEl = document.getElementById('void-info-no');
+    const amtEl = document.getElementById('void-info-amount');
+    const dateEl = document.getElementById('void-info-date');
+    const reasonEl = document.getElementById('void-payment-reason');
+    if (noEl) noEl.textContent = paymentNo || '-';
+    if (amtEl) amtEl.textContent = rp(amount || 0);
+    if (dateEl) dateEl.textContent = date || '-';
+    if (reasonEl) reasonEl.value = '';
+    openModal('modal-void-payment');
+}
+
+// Submit void payment
+async function submitVoidPayment() {
+    if (!_voidPaymentId) { showToast('ID pembayaran tidak ditemukan!', 'warning'); return; }
+    const reasonEl = document.getElementById('void-payment-reason');
+    const reason = reasonEl ? reasonEl.value.trim() : '';
+    if (!reason) { showToast('Alasan pembatalan wajib diisi!', 'warning'); return; }
+    const btn = document.getElementById('btn-submit-void');
+    if (btn) { btn.disabled = true; btn.textContent = 'Memproses...'; }
+    try {
+        const res = await fetch('/api/invoices/payments/' + encodeURIComponent(_voidPaymentId) + '/void', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ void_reason: reason })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-void-payment');
+            showToast('Pembayaran berhasil di-void dan posting kas dibalik.', 'success');
+            _voidPaymentId = null;
+            await fetchInvoices();
+            await fetchCashTransactions();
+            if (_voidInvoiceId) await openPaymentHistoryModal(_voidInvoiceId);
+        } else {
+            showToast('Gagal void: ' + (data.error || 'Terjadi kesalahan'), 'error');
+        }
+    } catch (err) {
+        console.error(err);
+        showToast('Gagal menghubungi server', 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="trash-2"></i> Konfirmasi Void'; }
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+}
 // ==========================================================================
 // USERS — CRUD
 // ==========================================================================
@@ -4086,6 +5259,7 @@ async function loadPrefixSettings() {
             const cashTxEl = document.getElementById('settings-prefix-cash-tx');
             const purchaseEl = document.getElementById('settings-prefix-purchase');
             const salesEl = document.getElementById('settings-prefix-sales');
+            const pricelistEl = document.getElementById('settings-prefix-pricelist');
 
             if (productEl) productEl.value = settings.prefix_product ?? 'P';
             if (customerEl) customerEl.value = settings.prefix_customer ?? 'C';
@@ -4093,6 +5267,7 @@ async function loadPrefixSettings() {
             if (cashTxEl) cashTxEl.value = settings.prefix_cash_transaction ?? 'CT';
             if (purchaseEl) purchaseEl.value = settings.prefix_purchase ?? 'PO/{YYYY}/{MM}/';
             if (salesEl) salesEl.value = settings.prefix_sales ?? 'INV/{YYYY}/{MM}/';
+            if (pricelistEl) pricelistEl.value = settings.prefix_pricelist ?? 'PL';
         }
     } catch (err) {
         console.error('Failed to load prefix settings', err);
@@ -4106,7 +5281,8 @@ async function savePrefixSettings() {
         prefix_vendor: document.getElementById('settings-prefix-vendor')?.value || 'V',
         prefix_cash_transaction: document.getElementById('settings-prefix-cash-tx')?.value || 'CT',
         prefix_purchase: document.getElementById('settings-prefix-purchase')?.value || 'PO/{YYYY}/{MM}/',
-        prefix_sales: document.getElementById('settings-prefix-sales')?.value || 'INV/{YYYY}/{MM}/'
+        prefix_sales: document.getElementById('settings-prefix-sales')?.value || 'INV/{YYYY}/{MM}/',
+        prefix_pricelist: document.getElementById('settings-prefix-pricelist')?.value || 'PL'
     };
 
     try {
@@ -4283,12 +5459,22 @@ const sectionTitles = {
 };
 
 function openImportModal(section) {
+    if (section === 'invoice') {
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        if (role !== 'admin' && role !== 'finance') {
+            showToast('Akses ditolak: Hanya role Administrator dan Finance yang dapat mengimpor invoice outstanding.', 'error');
+            return;
+        }
+    }
     currentImportSection = section;
     selectedImportFile = null;
+    parsedInvoiceImportData = null;
 
     // Set Title
     const titleEl = document.getElementById('import-modal-title');
-    if (titleEl) titleEl.innerText = `Import Data ${sectionTitles[section] || section}`;
+    if (titleEl) {
+        titleEl.innerText = section === 'invoice' ? 'Import Invoice Outstanding' : `Import Data ${sectionTitles[section] || section}`;
+    }
 
     // Reset Dropzone & Input
     const fileInput = document.getElementById('import-file-input');
@@ -4296,6 +5482,8 @@ function openImportModal(section) {
 
     // Reset Modal States
     document.getElementById('import-state-initial').style.display = 'block';
+    const previewEl = document.getElementById('import-state-preview');
+    if (previewEl) previewEl.style.display = 'none';
     document.getElementById('import-state-progress').style.display = 'none';
     document.getElementById('import-state-result').style.display = 'none';
 
@@ -4306,7 +5494,7 @@ function openImportModal(section) {
         <button class="btn-toolbar secondary" id="import-btn-cancel" onclick="closeImportModal()">Batal</button>
         <button class="btn-toolbar primary" id="import-btn-submit" onclick="startImportProcess()"
             style="opacity:0.5;cursor:not-allowed;pointer-events:none;">
-            <i data-lucide="upload"></i> Proses Import
+            <i data-lucide="upload"></i> ${section === 'invoice' ? 'Periksa & Preview Data' : 'Proses Import'}
         </button>
     `;
 
@@ -4357,13 +5545,14 @@ function setImportFile(file) {
             btnSubmit.style.opacity = '0.5';
             btnSubmit.style.cursor = 'not-allowed';
             btnSubmit.style.pointerEvents = 'none';
+            btnSubmit.innerHTML = `<i data-lucide="upload"></i> ${currentImportSection === 'invoice' ? 'Periksa & Preview Data' : 'Proses Import'}`;
         }
     } else {
         if (contentDiv) {
             contentDiv.innerHTML = `
                 <div style="display:flex;align-items:center;justify-content:center;gap:0.5rem;font-weight:600;color:var(--gray-800);">
                     <span>📄 ${file.name}</span>
-                    <button onclick="event.stopPropagation(); setImportFile(null);" style="background:transparent;border:none;color:var(--rose-500);font-size:1.2rem;cursor:pointer;font-weight:bold;padding:0 0.25rem;">×</button>
+                    <button onclick="event.stopPropagation(); setImportFile(null);" style="background:transparent;border:none;color:var(--rose-500);font-size:1.2rem;cursor:pointer;font-weight:bold;padding:0 0.25rem;">&times;</button>
                 </div>
             `;
         }
@@ -4371,6 +5560,7 @@ function setImportFile(file) {
             btnSubmit.style.opacity = '1';
             btnSubmit.style.cursor = 'pointer';
             btnSubmit.style.pointerEvents = 'auto';
+            btnSubmit.innerHTML = `<i data-lucide="upload"></i> ${currentImportSection === 'invoice' ? 'Periksa & Preview Data' : 'Proses Import'}`;
         }
     }
     if (typeof lucide !== 'undefined') lucide.createIcons();
@@ -4410,12 +5600,46 @@ function downloadImportTemplate() {
         ];
         filename = "sample_pembelian.xlsx";
     } else if (currentImportSection === 'invoice') {
-        headers = ["Tanggal", "Nama Customer", "Total", "Terbayar", "Tipe Pembayaran", "Jatuh Tempo"];
-        rows = [
-            ["2026-06-12", "Toko Berkah Jaya", 1154400, 1154400, "Tunai", "2026-06-12"],
-            ["2026-06-12", "Warung Sari Rasa", 406260, 406260, "Transfer", "2026-06-12"]
+        const headers = [
+            "No. Invoice",
+            "Tanggal",
+            "Nama Customer",
+            "Total",
+            "Total Dibayar",
+            "Tanggal Pembayaran Terakhir",
+            "Sisa Tagihan",
+            "Tipe Pembayaran",
+            "Jatuh Tempo"
         ];
-        filename = "sample_invoice.xlsx";
+        const rows = [
+            ["INV-2026-05-00101", "2026-05-10", "Toko Berkah Jaya", 5000000, 2000000, "2026-05-15", 3000000, "Kredit 30 Hari", "2026-06-09"],
+            ["INV-2026-05-00102", "2026-05-12", "Warung Sari Rasa", 1500000, 0, "", 1500000, "Kredit 14 Hari", "2026-05-26"]
+        ];
+        filename = "Template_Import_Invoice_Outstanding.xlsx";
+
+        const wb = XLSX.utils.book_new();
+        const wsTemplate = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+        XLSX.utils.book_append_sheet(wb, wsTemplate, "Template");
+
+        const guideData = [
+            ["PANDUAN PENGISIAN TEMPLATE IMPORT INVOICE OUTSTANDING"],
+            [""],
+            ["Kolom", "Status", "Keterangan & Aturan Format"],
+            ["No. Invoice", "Opsional", "Nomor invoice dari sistem lama (contoh: INV-2026-05-00101). Kosongkan jika ingin nomor di-generate otomatis oleh sistem."],
+            ["Tanggal", "Wajib", "Tanggal pembuatan invoice. Format: YYYY-MM-DD (contoh: 2026-05-10)."],
+            ["Nama Customer", "Wajib", "Nama pelanggan yang sudah terdaftar di Master Data Pelanggan."],
+            ["Total", "Wajib", "Total tagihan invoice. Format angka murni tanpa titik/koma ribuan (contoh: 5000000)."],
+            ["Total Dibayar", "Opsional", "Jumlah yang sudah dicicil/dibayar sebelum migrasi. Boleh 0 atau kosong. Tidak boleh sama atau lebih besar dari Total."],
+            ["Tanggal Pembayaran Terakhir", "Opsional", "Tanggal pembayaran saldo awal. Kosongkan jika sama dengan tanggal invoice. Format: YYYY-MM-DD."],
+            ["Sisa Tagihan", "Informasi", "Hanya sebagai referensi/pembanding visual di template. Sistem selalu menghitung ulang: Total - Total Dibayar."],
+            ["Tipe Pembayaran", "Opsional", "Pilihan tipe kredit: Kredit 1 Hari, Kredit 7 Hari, Kredit 14 Hari, Kredit 30 Hari. Default: Kredit 30 Hari."],
+            ["Jatuh Tempo", "Opsional", "Tanggal jatuh tempo tagihan. Format: YYYY-MM-DD. Kosongkan jika ingin dihitung otomatis dari tipe kredit."]
+        ];
+        const wsGuide = XLSX.utils.aoa_to_sheet(guideData);
+        XLSX.utils.book_append_sheet(wb, wsGuide, "Petunjuk Pengisian");
+
+        XLSX.writeFile(wb, filename);
+        return;
     }
 
     const data = [headers, ...rows];
@@ -4423,6 +5647,302 @@ function downloadImportTemplate() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Template");
     XLSX.writeFile(wb, filename);
+}
+
+function parseExcelDate(val) {
+    if (!val) return '';
+    if (val instanceof Date) {
+        const y = val.getFullYear();
+        const m = String(val.getMonth() + 1).padStart(2, '0');
+        const d = String(val.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+    if (typeof val === 'number') {
+        const jsDate = new Date(Math.round((val - 25569) * 86400 * 1000));
+        const y = jsDate.getUTCFullYear();
+        const m = String(jsDate.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(jsDate.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+    const str = String(val).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        return str.substring(0, 10);
+    }
+    const dmy = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmy) {
+        return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+    }
+    return str;
+}
+
+let parsedInvoiceImportData = null;
+
+function resetImportToInitial() {
+    parsedInvoiceImportData = null;
+    const initialEl = document.getElementById('import-state-initial');
+    const previewEl = document.getElementById('import-state-preview');
+    const progressEl = document.getElementById('import-state-progress');
+    const resultEl = document.getElementById('import-state-result');
+    if (initialEl) initialEl.style.display = 'block';
+    if (previewEl) previewEl.style.display = 'none';
+    if (progressEl) progressEl.style.display = 'none';
+    if (resultEl) resultEl.style.display = 'none';
+
+    const footer = document.getElementById('import-modal-footer');
+    if (footer) {
+        footer.style.display = 'flex';
+        footer.innerHTML = `
+            <button class="btn-toolbar secondary" id="import-btn-cancel" onclick="closeImportModal()">Batal</button>
+            <button class="btn-toolbar primary" id="import-btn-submit" onclick="startImportProcess()"
+                style="opacity:0.5;cursor:not-allowed;pointer-events:none;">
+                <i data-lucide="upload"></i> ${currentImportSection === 'invoice' ? 'Periksa & Preview Data' : 'Proses Import'}
+            </button>
+        `;
+    }
+    setImportFile(null);
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function previewInvoiceImport(rows, fileName) {
+    if (!rows || rows.length === 0) {
+        showToast('File Excel tidak berisi data.', 'warning');
+        return;
+    }
+
+    // Fetch master customers and existing invoices to check uniqueness
+    let customersList = [];
+    let existingInvoicesList = [];
+    try {
+        const [custRes, invRes] = await Promise.all([
+            fetch('/api/customers', { headers: getAuthHeaders() }),
+            fetch('/api/invoices', { headers: getAuthHeaders() })
+        ]);
+        customersList = await custRes.json();
+        existingInvoicesList = await invRes.json();
+    } catch (err) {
+        console.error('Failed fetching master data for preview:', err);
+    }
+
+    const custMap = {};
+    customersList.forEach(c => {
+        custMap[c.name.toLowerCase().trim()] = c;
+        custMap[c.id.toLowerCase().trim()] = c;
+    });
+
+    const existingInvIds = new Set(existingInvoicesList.map(i => String(i.id).toLowerCase().trim()));
+
+    const validRows = [];
+    const errorRows = [];
+    const seenBatchIds = new Set();
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    rows.forEach((row, idx) => {
+        const rowNum = idx + 2; // header is row 1
+        const noInvoice = String(row['No. Invoice'] || row['No Invoice'] || row['Nomor Invoice'] || row['no_invoice'] || row['id'] || '').trim();
+        const rawDate = row['Tanggal'] || row['date'] || row['tanggal'] || '';
+        const date = parseExcelDate(rawDate) || todayStr;
+        const custName = String(row['Nama Customer'] || row['Customer'] || row['Pelanggan'] || row['Nama Pelanggan'] || row['customer'] || '').trim();
+        const rawTotal = row['Total'] || row['total'] || row['Total Invoice'] || row['Nilai'] || 0;
+        const total = parseFloat(rawTotal) || 0;
+        const rawPaid = row['Total Dibayar'] ?? row['total_dibayar'] ?? row['Terbayar'] ?? row['terbayar'] ?? row['Dibayar'] ?? 0;
+        const totalDibayar = parseFloat(rawPaid) || 0;
+        const rawLastPay = row['Tanggal Pembayaran Terakhir'] || row['tanggal_pembayaran_terakhir'] || row['Tgl Bayar'] || '';
+        const lastPaymentDate = parseExcelDate(rawLastPay) || date;
+        const ptName = String(row['Tipe Pembayaran'] || row['tipe_pembayaran'] || 'Kredit 30 Hari').trim();
+        const rawDue = row['Jatuh Tempo'] || row['jatuh_tempo'] || row['Due Date'] || row['due_date'] || '';
+        const dueDate = parseExcelDate(rawDue);
+
+        // Validation 1: Customer
+        if (!custName) {
+            errorRows.push(`Baris ${rowNum}: Nama customer kosong.`);
+            return;
+        }
+        const matchedCust = custMap[custName.toLowerCase()];
+        if (!matchedCust) {
+            errorRows.push(`Baris ${rowNum}: Customer "${custName}" tidak terdaftar di sistem.`);
+            return;
+        }
+
+        // Validation 2: Total
+        if (total <= 0) {
+            errorRows.push(`Baris ${rowNum}: Total tagihan (${rp(total)}) harus lebih besar dari 0.`);
+            return;
+        }
+
+        // Validation 3: Total Dibayar < 0
+        if (totalDibayar < 0) {
+            errorRows.push(`Baris ${rowNum}: Total dibayar tidak boleh negatif.`);
+            return;
+        }
+
+        // Validation 4: Total Dibayar == Total (Bukan outstanding)
+        if (totalDibayar === total) {
+            errorRows.push(`Baris ${rowNum}: Total dibayar sama dengan total tagihan (${rp(total)}). Ini bukan outstanding karena sudah lunas.`);
+            return;
+        }
+
+        // Validation 5: Overpayment (Total Dibayar > Total)
+        if (totalDibayar > total) {
+            errorRows.push(`Baris ${rowNum}: Total dibayar (${rp(totalDibayar)}) melebihi total tagihan (${rp(total)}). Aturan cicilan: overpayment tidak diizinkan.`);
+            return;
+        }
+
+        // Validation 6: Future payment date
+        if (totalDibayar > 0 && lastPaymentDate > todayStr) {
+            errorRows.push(`Baris ${rowNum}: Tanggal pembayaran terakhir (${lastPaymentDate}) tidak boleh di masa depan.`);
+            return;
+        }
+
+        // Validation 7: Duplicate Invoice No
+        if (noInvoice) {
+            if (seenBatchIds.has(noInvoice.toLowerCase())) {
+                errorRows.push(`Baris ${rowNum}: Nomor invoice "${noInvoice}" duplikat di dalam file ini.`);
+                return;
+            }
+            if (existingInvIds.has(noInvoice.toLowerCase())) {
+                errorRows.push(`Baris ${rowNum}: Nomor invoice "${noInvoice}" sudah ada di database.`);
+                return;
+            }
+            seenBatchIds.add(noInvoice.toLowerCase());
+        }
+
+        const sisa = Math.max(0, total - totalDibayar);
+
+        validRows.push({
+            row_number: rowNum,
+            id: noInvoice || null,
+            date: date,
+            customer_id: matchedCust.id,
+            customer_name: matchedCust.name,
+            total: total,
+            total_dibayar: totalDibayar,
+            sisa: sisa,
+            last_payment_date: lastPaymentDate,
+            payment_type: ptName,
+            due_date: dueDate || null
+        });
+    });
+
+    parsedInvoiceImportData = {
+        validRows,
+        errorRows,
+        fileName
+    };
+
+    const totalTagihan = validRows.reduce((sum, r) => sum + r.total, 0);
+    const totalTerbayar = validRows.reduce((sum, r) => sum + r.total_dibayar, 0);
+    const totalSisa = validRows.reduce((sum, r) => sum + r.sisa, 0);
+
+    // Switch to preview state
+    document.getElementById('import-state-initial').style.display = 'none';
+    document.getElementById('import-state-preview').style.display = 'block';
+    document.getElementById('import-state-progress').style.display = 'none';
+    document.getElementById('import-state-result').style.display = 'none';
+
+    document.getElementById('import-preview-filename').textContent = `📄 ${fileName} (${rows.length} total baris)`;
+    document.getElementById('import-summary-count').textContent = `${validRows.length} Invoice`;
+    document.getElementById('import-summary-total').textContent = rp(totalTagihan);
+    document.getElementById('import-summary-paid').textContent = rp(totalTerbayar);
+    document.getElementById('import-summary-sisa').textContent = rp(totalSisa);
+
+    // Error box
+    const errBox = document.getElementById('import-preview-errors-box');
+    const errList = document.getElementById('import-preview-errors-list');
+    const errCount = document.getElementById('import-preview-errors-count');
+    if (errorRows.length > 0) {
+        errBox.style.display = 'block';
+        errCount.textContent = `${errorRows.length} Baris Bermasalah (Ditolak):`;
+        errList.innerHTML = errorRows.map(e => `<div>• ${e}</div>`).join('');
+    } else {
+        errBox.style.display = 'none';
+    }
+
+    // Preview Table
+    const tbody = document.getElementById('import-preview-table-body');
+    if (validRows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--rose-500);font-weight:600;">Tidak ada baris data yang valid untuk diimpor. Silakan perbaiki file Excel Anda.</td></tr>`;
+    } else {
+        tbody.innerHTML = validRows.map(r => `
+            <tr style="border-bottom:1px solid var(--gray-100);">
+                <td style="padding:0.35rem 0.5rem;font-weight:600;color:var(--gray-700);">${r.id || '<em style="color:var(--gray-400);">(Auto)</em>'}</td>
+                <td style="padding:0.35rem 0.5rem;">${r.customer_name}</td>
+                <td style="padding:0.35rem 0.5rem;color:var(--gray-600);">${r.date}</td>
+                <td style="padding:0.35rem 0.5rem;text-align:right;font-weight:600;">${rp(r.total)}</td>
+                <td style="padding:0.35rem 0.5rem;text-align:right;color:var(--emerald-600);">${rp(r.total_dibayar)}</td>
+                <td style="padding:0.35rem 0.5rem;text-align:right;color:var(--amber-600);font-weight:600;">${rp(r.sisa)}</td>
+                <td style="padding:0.35rem 0.5rem;color:var(--gray-600);">${r.due_date || '-'}</td>
+            </tr>
+        `).join('');
+    }
+
+    // Update Footer
+    const footer = document.getElementById('import-modal-footer');
+    footer.style.display = 'flex';
+    footer.innerHTML = `
+        <button class="btn-toolbar secondary" onclick="resetImportToInitial()">Ganti File</button>
+        <button class="btn-toolbar primary" id="import-btn-confirm" onclick="commitInvoiceImport()"
+            ${validRows.length === 0 ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            <i data-lucide="check"></i> Konfirmasi & Simpan (${validRows.length} Invoice)
+        </button>
+    `;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function commitInvoiceImport() {
+    if (!parsedInvoiceImportData || !parsedInvoiceImportData.validRows || parsedInvoiceImportData.validRows.length === 0) {
+        showToast('Tidak ada data valid untuk diimpor', 'warning');
+        return;
+    }
+
+    const validRows = parsedInvoiceImportData.validRows;
+
+    // Switch to progress
+    document.getElementById('import-state-initial').style.display = 'none';
+    document.getElementById('import-state-preview').style.display = 'none';
+    document.getElementById('import-state-progress').style.display = 'block';
+    document.getElementById('import-state-result').style.display = 'none';
+    document.getElementById('import-modal-footer').style.display = 'none';
+    document.getElementById('import-progress-text').innerText = `Menyimpan ${validRows.length} invoice outstanding secara transaksional...`;
+
+    try {
+        const res = await fetch('/api/invoices/import-outstanding', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ invoices: validRows })
+        });
+
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+            const text = await res.text();
+            throw new Error(`Server mengembalikan respons tidak valid (HTTP ${res.status}). Coba import dengan jumlah baris lebih sedikit. Detail: ${text.substring(0, 200)}`);
+        }
+        const result = await res.json();
+        if (!res.ok) {
+            throw new Error(result.error || 'Gagal menyimpan import invoice');
+        }
+
+        // Show Result
+        document.getElementById('import-state-progress').style.display = 'none';
+        document.getElementById('import-state-result').style.display = 'block';
+        document.getElementById('import-result-success').innerText = `Berhasil mengimpor: ${result.count} invoice outstanding.`;
+        document.getElementById('import-result-failed').innerText = parsedInvoiceImportData.errorRows.length > 0 ? `Dilewati (Error): ${parsedInvoiceImportData.errorRows.length} baris.` : '';
+
+        const errList = document.getElementById('import-error-list');
+        if (errList) {
+            errList.innerHTML = parsedInvoiceImportData.errorRows.map(f => `<div style="margin-bottom:0.25rem;">${f}</div>`).join('');
+        }
+
+        const footer = document.getElementById('import-modal-footer');
+        footer.style.display = 'flex';
+        footer.innerHTML = `
+            <button class="btn-toolbar primary" onclick="closeImportAndRefresh()">Tutup & Perbarui Tampilan</button>
+        `;
+
+        showToast(`${result.count} invoice outstanding berhasil diimpor!`, 'success');
+    } catch (err) {
+        console.error('Import commit error:', err);
+        showImportError(`Gagal memproses import (Transaksi dibatalkan/Rollback): ${err.message}`);
+    }
 }
 
 function startImportProcess() {
@@ -4435,7 +5955,12 @@ function startImportProcess() {
             const wb = XLSX.read(data, { type: 'array' });
             const sheet = wb.Sheets[wb.SheetNames[0]];
             const rows = XLSX.utils.sheet_to_json(sheet);
-            await executeImport(rows);
+
+            if (currentImportSection === 'invoice') {
+                await previewInvoiceImport(rows, selectedImportFile.name);
+            } else {
+                await executeImport(rows);
+            }
         } catch (err) {
             showImportError("Gagal membaca file Excel: " + err.message);
         }
@@ -4759,76 +6284,48 @@ function closeImportAndRefresh() {
     } else if (currentImportSection === 'pembelian') {
         fetchPurchases();
     } else if (currentImportSection === 'invoice') {
-        fetchInvoices();
+        if (typeof fetchInvoices === 'function') fetchInvoices();
+        if (typeof fetchPiutang === 'function') fetchPiutang();
+        if (typeof fetchDashboardData === 'function') fetchDashboardData();
     }
 }
 
-function exportSection(section) {
+async function exportSection(section) {
+    // Export selalu pakai all=true untuk data lengkap (bukan hanya halaman aktif)
     let headers = [];
     let rows = [];
     let filename = "";
 
-    if (section === 'produk') {
-        headers = ["SKU", "Nama Produk", "Brand/Merk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
-        rows = PRODUCTS.map(p => [
-            p.sku || '',
-            p.name || '',
-            p.brand || '',
-            p.category || '',
-            p.cost || 0,
-            p.price || 0,
-            p.stock || 0,
-            p.minStock || 0,
-            p.unit || ''
-        ]);
-        filename = "export_produk.xlsx";
-    } else if (section === 'pelanggan') {
-        headers = ["Nama", "Tipe", "Telepon", "Kota", "Alamat", "Limit Piutang"];
-        rows = CUSTOMERS.map(c => [
-            c.name || '',
-            c.type || '',
-            c.phone || '',
-            c.city || '',
-            c.address || '',
-            c.creditLimit || 0
-        ]);
-        filename = "export_pelanggan.xlsx";
-    } else if (section === 'vendor') {
-        headers = ["Nama", "Kategori", "Telepon", "Kota", "Alamat", "No. Identitas", "Bank", "No. Rekening", "Pemilik Rekening"];
-        rows = VENDORS.map(v => [
-            v.name || '',
-            v.category || '',
-            v.phone || '',
-            v.city || '',
-            v.address || '',
-            v.idNumber || '',
-            v.bank || '',
-            v.rekening || '',
-            v.pemilik || ''
-        ]);
-        filename = "export_vendor.xlsx";
-    } else if (section === 'pembelian') {
-        headers = ["Tanggal", "Nama Vendor", "Total", "Terbayar", "Tipe Pembayaran", "Jatuh Tempo"];
-        rows = PURCHASES.map(p => [
-            p.date || '',
-            p.vendor || '',
-            p.total || 0,
-            p.paid || 0,
-            p.type || '',
-            p.dueDate || ''
-        ]);
-        filename = "export_pembelian.xlsx";
-    } else if (section === 'invoice') {
-        headers = ["Tanggal", "Nama Customer", "Total", "Terbayar", "Tipe Pembayaran", "Jatuh Tempo"];
-        rows = INVOICES.map(i => [
-            i.date || '',
-            i.customer || '',
-            i.total || 0,
-            i.paid || 0,
-            i.type || '',
-            i.dueDate || ''
-        ]);
-        filename = "export_invoice.xlsx";
+    try {
+        if (section === 'produk') {
+            headers = ["SKU", "Nama Produk", "Brand/Merk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
+            rows = PRODUCTS.map(p => [p.sku||'', p.name||'', p.brand||'', p.category||'', p.cost||0, p.price||0, p.stock||0, p.minStock||0, p.unit||'']);
+            filename = "export_produk.xlsx";
+        } else if (section === 'pelanggan') {
+            headers = ["Nama", "Tipe", "Telepon", "Kota", "Alamat", "Limit Piutang"];
+            rows = CUSTOMERS.map(c => [c.name||'', c.type||'', c.phone||'', c.city||'', c.address||'', c.creditLimit||0]);
+            filename = "export_pelanggan.xlsx";
+        } else if (section === 'vendor') {
+            headers = ["Nama", "Kategori", "Telepon", "Kota", "Alamat", "No. Identitas", "Bank", "No. Rekening", "Pemilik Rekening"];
+            rows = VENDORS.map(v => [v.name||'', v.category||'', v.phone||'', v.city||'', v.address||'', v.idNumber||'', v.bank||'', v.rekening||'', v.pemilik||'']);
+            filename = "export_vendor.xlsx";
+        } else if (section === 'pembelian') {
+            const res = await fetch('/api/purchases?all=true', { headers: getAuthHeaders() });
+            const data = await res.json();
+            headers = ["Tanggal", "Nama Vendor", "Total", "Terbayar", "Tipe Pembayaran", "Jatuh Tempo"];
+            rows = (Array.isArray(data) ? data : []).map(p => [p.date||'', p.vendor||'', p.total||0, p.paid||0, p.type||'', p.dueDate||'']);
+            filename = "export_pembelian.xlsx";
+        } else if (section === 'invoice') {
+            const res = await fetch('/api/invoices?all=true', { headers: getAuthHeaders() });
+            const data = await res.json();
+            headers = ["Tanggal", "Nama Customer", "Total", "Terbayar", "Tipe Pembayaran", "Jatuh Tempo"];
+            rows = (Array.isArray(data) ? data : []).map(i => [i.date||'', i.customer||'', i.total||0, i.paid||0, i.type||'', i.dueDate||'']);
+            filename = "export_invoice.xlsx";
+        }
+    } catch (err) {
+        console.error('Export failed', err);
+        showToast('Gagal export data', 'error');
+        return;
     }
 
     const data = [headers, ...rows];
@@ -4847,6 +6344,8 @@ window.setImportFile = setImportFile;
 window.downloadImportTemplate = downloadImportTemplate;
 window.startImportProcess = startImportProcess;
 window.closeImportAndRefresh = closeImportAndRefresh;
+window.resetImportToInitial = resetImportToInitial;
+window.commitInvoiceImport = commitInvoiceImport;
 window.exportSection = exportSection;
 
 // ---------- Company Settings & Print Invoice ----------
@@ -5070,4 +6569,1042 @@ async function renderCustomerFeeReport() {
     if (startEl && !startEl.value) startEl.value = `${year}-01-01`;
     if (endEl && !endEl.value) endEl.value = today.toISOString().split('T')[0];
 })();
+
+// ==========================================================================
+// PRICELIST MODULE — helpers, CRUD, POS integration
+// ==========================================================================
+
+let activePricelistId = null;
+let currentPricelistDetailId = null;
+let pricelistDetailData = null;
+let pendingDeactivatePlPayload = null;
+let plCsvParsedRows = [];
+let addPlAvailableProducts = [];
+
+// ── Helper: populate pricelist dropdown in customer modals ─────────────────
+function populateCustomerPricelistDropdown(selectId, selectedId) {
+    const el = document.getElementById(selectId);
+    if (!el) return;
+    const activeLists = (PRICELISTS || []).filter(pl => pl.is_active);
+    el.innerHTML = '<option value="">Harga Master (tanpa pricelist)</option>' +
+        activeLists.map(pl =>
+            `<option value="${pl.id}" ${String(pl.id) === String(selectedId) ? 'selected' : ''}>${pl.nama} (${pl.kode})</option>`
+        ).join('');
+}
+
+// ── handlePOSCustomerChange – fetch effective prices when customer changes ──
+async function handlePOSCustomerChange(customerId) {
+    const badgeEl = document.getElementById('pos-customer-pricelist-badge');
+    const badgeNameEl = document.getElementById('pos-customer-pricelist-name');
+
+    if (!customerId) {
+        currentPOSCustomerEffectivePrices = {};
+        if (badgeEl) badgeEl.style.display = 'none';
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/pricelists/effective-prices?customer_id=${encodeURIComponent(customerId)}`, { headers: getAuthHeaders() });
+        if (!res.ok) throw new Error('Failed to fetch effective prices');
+        const data = await res.json();
+        const priceList = Array.isArray(data) ? data : (Array.isArray(data.prices) ? data.prices : []);
+
+        currentPOSCustomerEffectivePrices = {};
+        priceList.forEach(row => {
+            currentPOSCustomerEffectivePrices[row.product_id] = row;
+        });
+
+        // Update badge UI
+        if (badgeEl && badgeNameEl) {
+            const plInfo = data.pricelist;
+            if (plInfo && plInfo.is_active) {
+                badgeNameEl.textContent = plInfo.nama;
+                badgeEl.style.display = 'inline-flex';
+            } else {
+                badgeEl.style.display = 'none';
+            }
+        }
+
+        // Recalculate cart prices for non-manual items (Spec 5.3 pt 4)
+        if (cart && cart.length > 0) {
+            let pricesAdjusted = false;
+            cart.forEach(item => {
+                if (!item.manual_override) {
+                    const eff = currentPOSCustomerEffectivePrices[item.id];
+                    const newPrice = eff ? parseFloat(eff.harga_efektif) : parseFloat(item.originalPrice || PRODUCTS.find(p => p.id === item.id)?.price || item.price);
+                    if (item.price !== newPrice) {
+                        pricesAdjusted = true;
+                        item.price = newPrice;
+                    }
+                    item.sumberHarga = eff ? eff.sumber_harga : 'master';
+                    item.pricelistNama = eff ? (eff.pricelist_nama || '') : '';
+                }
+            });
+            renderCart();
+            if (pricesAdjusted) {
+                showToast('Harga item keranjang disesuaikan dengan pricelist pelanggan.', 'info');
+            }
+        }
+    } catch (err) {
+        console.error('handlePOSCustomerChange error:', err);
+    }
+}
+
+// ── fetchPricelists ─────────────────────────────────────────────────────────
+async function fetchPricelists() {
+    try {
+        const res = await fetch('/api/pricelists', { headers: getAuthHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        PRICELISTS = data.map(pl => ({
+            id: pl.id,
+            kode: pl.kode,
+            nama: pl.nama,
+            keterangan: pl.keterangan || '',
+            is_active: pl.is_active !== false && pl.is_active != 0,
+            total_items: parseInt(pl.total_items) || 0,
+            total_customers: parseInt(pl.total_customers) || 0,
+            created_at: pl.created_at,
+            updated_at: pl.updated_at
+        }));
+        if (document.getElementById('page-pricelists')?.classList.contains('active')) {
+            renderPricelistsTable();
+        }
+    } catch (err) {
+        console.error('fetchPricelists error:', err);
+    }
+}
+
+// ── renderPricelistsTable ──────────────────────────────────────────────────
+function renderPricelistsTable() {
+    const tbody = document.getElementById('pricelists-table-body');
+    if (!tbody) return;
+
+    const searchVal = (document.getElementById('pricelist-search')?.value || '').toLowerCase().trim();
+    const statusVal = document.getElementById('pricelist-status-filter')?.value || 'all';
+
+    let list = PRICELISTS || [];
+    if (searchVal) {
+        list = list.filter(pl =>
+            pl.nama.toLowerCase().includes(searchVal) ||
+            pl.kode.toLowerCase().includes(searchVal) ||
+            (pl.keterangan && pl.keterangan.toLowerCase().includes(searchVal))
+        );
+    }
+    if (statusVal !== 'all') {
+        const isAktif = statusVal === '1';
+        list = list.filter(pl => pl.is_active === isAktif);
+    }
+
+    if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:2.5rem; color:var(--gray-400);">
+            <i data-lucide="inbox" style="width:28px;height:28px;margin-bottom:0.5rem;display:inline-block;opacity:0.6;"></i>
+            <div>Belum ada pricelist yang sesuai. Klik "Buat Pricelist Baru" untuk memulai.</div>
+        </td></tr>`;
+        if (window.lucide) lucide.createIcons();
+        return;
+    }
+
+    tbody.innerHTML = list.map(pl => `
+        <tr style="cursor:pointer;" onclick="openPricelistDetail(${pl.id})">
+            <td style="font-weight:600; color:var(--blue-600);">${pl.kode}</td>
+            <td style="font-weight:600; color:var(--gray-800);">${pl.nama}</td>
+            <td style="color:var(--gray-500); max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${pl.keterangan || '<span style="color:var(--gray-300);">—</span>'}</td>
+            <td style="text-align:center; font-weight:600;">${pl.total_items}</td>
+            <td style="text-align:center; font-weight:600; color:${pl.total_customers > 0 ? 'var(--blue-600)' : 'var(--gray-500)'};">${pl.total_customers}</td>
+            <td style="text-align:center;">
+                <span class="badge-status ${pl.is_active ? 'aman' : 'bad'}">${pl.is_active ? 'Aktif' : 'Nonaktif'}</span>
+            </td>
+            <td style="text-align:right; white-space:nowrap;" onclick="event.stopPropagation()">
+                <button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem;" title="Edit" onclick="openEditPricelistModal(${pl.id})">
+                    <i data-lucide="edit-2" style="width:13px;height:13px;margin:0;"></i>
+                </button>
+                <button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem;" title="Duplikat" onclick="openDuplicatePricelistModal(${pl.id})">
+                    <i data-lucide="copy" style="width:13px;height:13px;margin:0;"></i>
+                </button>
+                <button class="btn-toolbar secondary" style="padding:0.25rem 0.5rem; color:var(--rose-500);" title="Hapus" onclick="deletePricelist(${pl.id}, '${pl.nama.replace(/'/g, "\\'")}', ${pl.total_customers})">
+                    <i data-lucide="trash-2" style="width:13px;height:13px;margin:0;"></i>
+                </button>
+            </td>
+        </tr>
+    `).join('');
+    if (window.lucide) lucide.createIcons();
+}
+
+// ── showPricelistView – toggle list / detail ──────────────────────────────
+function showPricelistView(view) {
+    const listView = document.getElementById('pricelists-list-view');
+    const detailView = document.getElementById('pricelists-detail-view');
+    if (view === 'list') {
+        if (listView) listView.style.display = '';
+        if (detailView) detailView.style.display = 'none';
+        activePricelistId = null;
+        currentPricelistDetailId = null;
+        pricelistDetailData = null;
+    } else {
+        if (listView) listView.style.display = 'none';
+        if (detailView) detailView.style.display = '';
+    }
+}
+
+function closePricelistDetail() {
+    showPricelistView('list');
+    renderPricelistsTable();
+}
+
+// ── openCreatePricelistModal & submitCreatePricelist ────────────────────────
+function openCreatePricelistModal() {
+    const nameEl = document.getElementById('create-pl-nama');
+    const descEl = document.getElementById('create-pl-keterangan');
+    if (nameEl) nameEl.value = '';
+    if (descEl) descEl.value = '';
+    openModal('modal-create-pricelist');
+    setTimeout(() => nameEl?.focus(), 100);
+}
+
+async function submitCreatePricelist() {
+    const nama = document.getElementById('create-pl-nama')?.value.trim();
+    const keterangan = document.getElementById('create-pl-keterangan')?.value.trim() || '';
+    if (!nama) {
+        showToast('Nama pricelist wajib diisi!', 'warning');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/pricelists', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ nama, keterangan })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-create-pricelist');
+            showToast(`Pricelist "${data.data.nama}" (${data.data.kode}) berhasil dibuat!`, 'success');
+            await fetchPricelists();
+            openPricelistDetail(data.data.id);
+        } else {
+            showToast(data.error || 'Gagal membuat pricelist', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menghubungi server', 'error');
+    }
+}
+
+// ── openEditPricelistModal & submitEditPricelist ────────────────────────────
+function openEditPricelistModal(id) {
+    const pl = PRICELISTS.find(p => p.id == id);
+    if (!pl) return;
+    document.getElementById('edit-pl-id').value = pl.id;
+    document.getElementById('edit-pl-kode-display').value = pl.kode;
+    document.getElementById('edit-pl-nama').value = pl.nama;
+    document.getElementById('edit-pl-keterangan').value = pl.keterangan || '';
+    document.getElementById('edit-pl-status').value = pl.is_active ? '1' : '0';
+    openModal('modal-edit-pricelist');
+}
+
+async function submitEditPricelist() {
+    const id = document.getElementById('edit-pl-id')?.value;
+    const nama = document.getElementById('edit-pl-nama')?.value.trim();
+    const keterangan = document.getElementById('edit-pl-keterangan')?.value.trim() || '';
+    const is_active = parseInt(document.getElementById('edit-pl-status')?.value || '1', 10);
+
+    if (!nama) {
+        showToast('Nama pricelist tidak boleh kosong!', 'warning');
+        return;
+    }
+
+    const pl = PRICELISTS.find(p => p.id == id);
+    // Spec 5.1: If turning inactive while used by customers, prompt confirmation modal
+    if (is_active === 0 && pl && pl.total_customers > 0) {
+        pendingDeactivatePlPayload = { id, nama, keterangan, is_active: 0 };
+        document.getElementById('deactivate-pl-id').value = id;
+        const msgEl = document.getElementById('deactivate-pl-message');
+        if (msgEl) {
+            msgEl.innerHTML = `Pricelist <strong>"${pl.nama}"</strong> sedang digunakan oleh <strong>${pl.total_customers} pelanggan</strong>.`;
+        }
+        closeModal('modal-edit-pricelist');
+        openModal('modal-confirm-deactivate-pricelist');
+        return;
+    }
+
+    await doUpdatePricelist({ id, nama, keterangan, is_active });
+}
+
+async function doUpdatePricelist(payload) {
+    try {
+        const res = await fetch(`/api/pricelists/${payload.id}`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-edit-pricelist');
+            closeModal('modal-confirm-deactivate-pricelist');
+            showToast('Pricelist berhasil diperbarui!', 'success');
+            await fetchPricelists();
+            if (activePricelistId == payload.id) {
+                openPricelistDetail(payload.id);
+            }
+        } else {
+            showToast(data.error || 'Gagal memperbarui pricelist', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menghubungi server', 'error');
+    }
+}
+
+async function confirmDeactivatePricelist() {
+    if (!pendingDeactivatePlPayload) {
+        const id = document.getElementById('deactivate-pl-id')?.value;
+        if (!id) return;
+        pendingDeactivatePlPayload = { id, is_active: 0 };
+    }
+    await doUpdatePricelist(pendingDeactivatePlPayload);
+    pendingDeactivatePlPayload = null;
+}
+
+// ── openDuplicatePricelistModal & submitDuplicatePricelist ─────────────────
+function openDuplicatePricelistModal(id) {
+    const pl = PRICELISTS.find(p => p.id == id);
+    if (!pl) return;
+    document.getElementById('duplicate-pl-id').value = pl.id;
+    document.getElementById('duplicate-pl-nama').value = `${pl.nama} (Salinan)`;
+    openModal('modal-duplicate-pricelist');
+    setTimeout(() => document.getElementById('duplicate-pl-nama')?.focus(), 100);
+}
+
+async function submitDuplicatePricelist() {
+    const id = document.getElementById('duplicate-pl-id')?.value;
+    const nama = document.getElementById('duplicate-pl-nama')?.value.trim();
+    if (!id) return;
+    if (!nama) {
+        showToast('Nama pricelist baru wajib diisi!', 'warning');
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}/duplicate`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ nama })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-duplicate-pricelist');
+            showToast(`Duplikat berhasil: "${data.data.nama}" (${data.data.kode})`, 'success');
+            await fetchPricelists();
+            openPricelistDetail(data.data.id);
+        } else {
+            showToast(data.error || 'Gagal menduplikat pricelist', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menghubungi server', 'error');
+    }
+}
+
+// ── deletePricelist ────────────────────────────────────────────────────────
+async function deletePricelist(id, nama, totalCustomers) {
+    // Spec R7: Pricelist yang masih dipakai customer tidak boleh dihapus
+    if (totalCustomers > 0) {
+        showToast(`Tidak dapat dihapus: ${totalCustomers} pelanggan masih menggunakan pricelist ini. Pricelist hanya boleh dinonaktifkan.`, 'warning');
+        return;
+    }
+    if (!confirm(`Hapus permanen pricelist "${nama}"?`)) return;
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}`, { method: 'DELETE', headers: getAuthHeaders() });
+        const data = await res.json();
+        if (res.status === 409) {
+            showToast(data.error || `Tidak bisa dihapus: masih digunakan oleh ${data.total_customers} pelanggan.`, 'error');
+            return;
+        }
+        if (res.ok) {
+            showToast('Pricelist berhasil dihapus!', 'success');
+            await fetchPricelists();
+            showPricelistView('list');
+        } else {
+            showToast(data.error || 'Gagal menghapus pricelist', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menghubungi server', 'error');
+    }
+}
+
+// ── openPricelistDetail ────────────────────────────────────────────────────
+async function openPricelistDetail(id) {
+    activePricelistId = id;
+    currentPricelistDetailId = id;
+    showPricelistView('detail');
+
+    const detailNama = document.getElementById('detail-pl-nama');
+    if (detailNama) detailNama.textContent = 'Memuat...';
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}`, { headers: getAuthHeaders() });
+        if (!res.ok) throw new Error('Not found');
+        pricelistDetailData = await res.json();
+        const pl = pricelistDetailData;
+
+        if (detailNama) detailNama.textContent = pl.nama;
+        const kodeEl = document.getElementById('detail-pl-kode');
+        if (kodeEl) kodeEl.textContent = pl.kode;
+
+        const statusBadge = document.getElementById('detail-pl-badge-status');
+        if (statusBadge) {
+            statusBadge.textContent = pl.is_active ? 'Aktif' : 'Nonaktif';
+            statusBadge.className = `badge-status ${pl.is_active ? 'aman' : 'bad'}`;
+        }
+
+        const ketEl = document.getElementById('detail-pl-keterangan');
+        if (ketEl) ketEl.textContent = pl.keterangan || 'Tidak ada keterangan';
+
+        // Stats calculation
+        const items = pl.items || [];
+        const statItems = document.getElementById('stat-pl-total-items');
+        const statCusts = document.getElementById('stat-pl-total-customers');
+        const statDiff = document.getElementById('stat-pl-avg-diff');
+        if (statItems) statItems.textContent = items.length;
+        if (statCusts) statCusts.textContent = pl.total_customers || 0;
+
+        if (statDiff && items.length > 0) {
+            const diffs = items.filter(i => parseFloat(i.harga_master) > 0).map(i =>
+                ((parseFloat(i.harga) - parseFloat(i.harga_master)) / parseFloat(i.harga_master)) * 100
+            );
+            const avg = diffs.length > 0 ? (diffs.reduce((a, b) => a + b, 0) / diffs.length).toFixed(1) : 0;
+            statDiff.textContent = `${avg > 0 ? '+' : ''}${avg}%`;
+            statDiff.style.color = avg < 0 ? 'var(--emerald-600)' : (avg > 0 ? 'var(--rose-500)' : 'var(--gray-600)');
+        } else if (statDiff) {
+            statDiff.textContent = '0%';
+            statDiff.style.color = 'var(--gray-600)';
+        }
+
+        renderPricelistItemsTable(items);
+    } catch (err) {
+        showToast('Gagal memuat detail pricelist', 'error');
+        showPricelistView('list');
+    }
+}
+
+// ── renderPricelistItemsTable ──────────────────────────────────────────────
+function renderPricelistItemsTable(items) {
+    const tbody = document.getElementById('detail-pl-items-body');
+    const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+    const showHpp = role === 'admin' || role === 'owner';
+
+    const thHpp = document.getElementById('th-pl-hpp');
+    if (thHpp) thHpp.style.display = showHpp ? '' : 'none';
+
+    // Reset check all
+    const chkAll = document.getElementById('check-all-pl-items');
+    if (chkAll) chkAll.checked = false;
+    updatePricelistItemSelection();
+
+    if (!tbody) return;
+    if (!items || items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:2.5rem; color:var(--gray-400);">
+            <i data-lucide="package" style="width:28px;height:28px;margin-bottom:0.5rem;display:inline-block;opacity:0.6;"></i>
+            <div>Belum ada produk di pricelist ini. Klik <strong>Tambah Produk</strong> atau <strong>Import CSV</strong> untuk mulai.</div>
+        </td></tr>`;
+        if (window.lucide) lucide.createIcons();
+        return;
+    }
+
+    tbody.innerHTML = items.map(item => {
+        const hargaMaster = parseFloat(item.harga_master || 0);
+        const hargaKhusus = parseFloat(item.harga || 0);
+        const selisihRp = hargaKhusus - hargaMaster;
+        const selisihPct = hargaMaster > 0 ? (selisihRp / hargaMaster * 100).toFixed(1) : 0;
+        const diffColor = selisihPct < 0 ? 'var(--emerald-600)' : (selisihPct > 0 ? 'var(--rose-500)' : 'var(--gray-400)');
+        const hpp = parseFloat(item.hpp || 0);
+        const hppWarn = showHpp && hpp > 0 && hargaKhusus < hpp;
+
+        return `<tr data-product-id="${item.product_id}">
+            <td style="text-align:center;">
+                <input type="checkbox" class="pl-item-chk" value="${item.product_id}" onchange="updatePricelistItemSelection()">
+            </td>
+            <td style="font-weight:600; color:var(--blue-600); font-size:0.85rem;">${item.sku || '-'}</td>
+            <td style="font-weight:600; color:var(--gray-800);">${item.product_name || item.name || '-'}</td>
+            <td style="color:var(--gray-500); font-size:0.85rem;">${item.unit || '-'}</td>
+            <td style="text-align:right; font-weight:500;">${rp(hargaMaster)}</td>
+            <td style="text-align:right; font-weight:500; color:${hppWarn ? 'var(--rose-600)' : 'var(--gray-700)'}; display:${showHpp ? '' : 'none'};">
+                ${showHpp ? rp(hpp) : '—'}${hppWarn ? ' ⚠️' : ''}
+            </td>
+            <td style="text-align:right;">
+                <input type="number" class="inline-price-input"
+                    value="${hargaKhusus}"
+                    min="1" step="1"
+                    onchange="savePricelistItemPrice('${item.product_id}', this.value, this)"
+                    style="width:130px; text-align:right; font-weight:600;"
+                    title="Ubah harga khusus">
+            </td>
+            <td style="text-align:right; font-weight:600; color:${diffColor}; font-size:0.85rem;">
+                ${selisihRp >= 0 ? '+' : ''}${rp(selisihRp)}<br>
+                <span style="font-size:0.75rem;">${selisihPct > 0 ? '+' : ''}${selisihPct}%</span>
+            </td>
+            <td style="text-align:center;">
+                ${hppWarn ? '<span class="badge-hpp-warning" style="font-size:0.68rem; padding:0.15rem 0.4rem;">⚠️ Bawah HPP</span>' : '<span style="color:var(--gray-300); font-size:0.8rem;">—</span>'}
+            </td>
+            <td style="text-align:center;">
+                <button class="btn-toolbar secondary" style="padding:0.25rem 0.45rem; color:var(--rose-500);" title="Hapus dari pricelist" onclick="deletePricelistItem('${item.product_id}')">
+                    <i data-lucide="x" style="width:13px;height:13px;margin:0;"></i>
+                </button>
+            </td>
+        </tr>`;
+    }).join('');
+    if (window.lucide) lucide.createIcons();
+}
+
+// ── savePricelistItemPrice ─────────────────────────────────────────────────
+async function savePricelistItemPrice(productId, newPrice, inputEl) {
+    const id = activePricelistId;
+    if (!id) return;
+    const harga = parseFloat(newPrice);
+    if (isNaN(harga) || harga <= 0) {
+        showToast('Harga harus lebih besar dari 0!', 'warning');
+        if (inputEl && pricelistDetailData?.items) {
+            const orig = pricelistDetailData.items.find(i => i.product_id === productId);
+            if (orig) inputEl.value = orig.harga;
+        }
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}/items`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ items: [{ product_id: productId, harga }] })
+        });
+        if (res.ok) {
+            if (pricelistDetailData?.items) {
+                const item = pricelistDetailData.items.find(i => i.product_id === productId);
+                if (item) item.harga = harga;
+            }
+            showToast('Harga berhasil disimpan', 'success');
+            openPricelistDetail(id);
+            fetchPricelists();
+        } else {
+            const data = await res.json();
+            showToast(data.error || 'Gagal menyimpan harga', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menyimpan harga', 'error');
+    }
+}
+
+// ── deletePricelistItem ────────────────────────────────────────────────────
+async function deletePricelistItem(productId) {
+    const id = activePricelistId;
+    if (!id) return;
+    if (!confirm('Hapus produk ini dari pricelist?')) return;
+    try {
+        const res = await fetch(`/api/pricelists/${id}/items/${productId}`, { method: 'DELETE', headers: getAuthHeaders() });
+        if (res.ok) {
+            showToast('Produk dihapus dari pricelist', 'success');
+            await openPricelistDetail(id);
+            await fetchPricelists();
+        } else {
+            const data = await res.json();
+            showToast(data.error || 'Gagal menghapus produk', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menghapus produk', 'error');
+    }
+}
+
+// ── Multi-selection in items table ─────────────────────────────────────────
+function toggleSelectAllPricelistItems(checked) {
+    document.querySelectorAll('.pl-item-chk').forEach(chk => { chk.checked = checked; });
+    updatePricelistItemSelection();
+}
+
+function updatePricelistItemSelection() {
+    const checked = document.querySelectorAll('.pl-item-chk:checked');
+    const countEl = document.getElementById('detail-pl-selected-count');
+    const btnEl = document.getElementById('btn-bulk-delete-items');
+    if (countEl) {
+        countEl.textContent = `${checked.length} dipilih`;
+        countEl.style.display = checked.length > 0 ? '' : 'none';
+    }
+    if (btnEl) btnEl.style.display = checked.length > 0 ? '' : 'none';
+}
+
+async function deleteSelectedPricelistItems() {
+    const id = activePricelistId;
+    const checked = Array.from(document.querySelectorAll('.pl-item-chk:checked')).map(c => c.value);
+    if (!checked.length || !id) return;
+    if (!confirm(`Hapus ${checked.length} produk terpilih dari pricelist ini?`)) return;
+
+    try {
+        for (const productId of checked) {
+            await fetch(`/api/pricelists/${id}/items/${productId}`, { method: 'DELETE', headers: getAuthHeaders() });
+        }
+        showToast(`${checked.length} produk berhasil dihapus`, 'success');
+        await openPricelistDetail(id);
+        await fetchPricelists();
+    } catch (err) {
+        showToast('Gagal menghapus beberapa produk', 'error');
+    }
+}
+
+function filterPricelistItems() {
+    const q = (document.getElementById('detail-pl-search')?.value || '').toLowerCase();
+    document.querySelectorAll('#detail-pl-items-body tr').forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = q ? (text.includes(q) ? '' : 'none') : '';
+    });
+}
+
+// ── Modal Add Products to Pricelist ───────────────────────────────────────
+function openAddPricelistProductsModal() {
+    const id = activePricelistId;
+    if (!id) return;
+    const existingIds = new Set((pricelistDetailData?.items || []).map(i => i.product_id));
+
+    // Populate category filter
+    const catSelect = document.getElementById('add-pl-prod-category');
+    if (catSelect) {
+        const uniqueCats = Array.from(new Set(PRODUCTS.map(p => p.category).filter(Boolean)));
+        catSelect.innerHTML = '<option value="all">Semua Kategori</option>' +
+            uniqueCats.map(c => `<option value="${c}">${c}</option>`).join('');
+    }
+
+    // Filter available products
+    addPlAvailableProducts = PRODUCTS.filter(p => !existingIds.has(p.id));
+
+    const searchInput = document.getElementById('add-pl-prod-search');
+    if (searchInput) searchInput.value = '';
+    const modeSelect = document.getElementById('add-pl-initial-price-mode');
+    if (modeSelect) modeSelect.value = 'master';
+    handleInitialPriceModeChange();
+
+    renderAddPricelistProductsList();
+    openModal('modal-add-pricelist-products');
+}
+
+function handleInitialPriceModeChange() {
+    const mode = document.getElementById('add-pl-initial-price-mode')?.value || 'master';
+    const percentInp = document.getElementById('add-pl-percent-input');
+    const percentLbl = document.getElementById('add-pl-percent-label');
+    const showPercent = mode === 'discount' || mode === 'markup';
+    if (percentInp) {
+        percentInp.style.display = showPercent ? 'inline-block' : 'none';
+        if (!percentInp.value) percentInp.value = '10';
+    }
+    if (percentLbl) percentLbl.style.display = showPercent ? 'inline' : 'none';
+    recalculateAddPricelistInitialPrices();
+}
+
+function recalculateAddPricelistInitialPrices() {
+    const mode = document.getElementById('add-pl-initial-price-mode')?.value || 'master';
+    const pct = parseFloat(document.getElementById('add-pl-percent-input')?.value || '10');
+
+    document.querySelectorAll('#add-pl-products-body tr').forEach(row => {
+        const pid = row.dataset.productId;
+        const prod = PRODUCTS.find(p => p.id === pid);
+        if (!prod) return;
+        const master = parseFloat(prod.price || 0);
+        let initPrice = master;
+        if (mode === 'discount') {
+            initPrice = Math.max(1, Math.round(master * (1 - pct / 100)));
+        } else if (mode === 'markup') {
+            initPrice = Math.round(master * (1 + pct / 100));
+        }
+        const inp = row.querySelector('.add-pl-price-input');
+        if (inp) inp.value = initPrice;
+    });
+}
+
+function renderAddPricelistProductsList() {
+    const tbody = document.getElementById('add-pl-products-body');
+    if (!tbody) return;
+
+    const q = (document.getElementById('add-pl-prod-search')?.value || '').toLowerCase().trim();
+    const cat = document.getElementById('add-pl-prod-category')?.value || 'all';
+
+    let filtered = addPlAvailableProducts;
+    if (cat !== 'all') {
+        filtered = filtered.filter(p => p.category === cat || p.category_id === cat);
+    }
+    if (q) {
+        filtered = filtered.filter(p =>
+            p.name.toLowerCase().includes(q) ||
+            (p.sku && p.sku.toLowerCase().includes(q)) ||
+            p.id.toLowerCase().includes(q)
+        );
+    }
+
+    const mode = document.getElementById('add-pl-initial-price-mode')?.value || 'master';
+    const pct = parseFloat(document.getElementById('add-pl-percent-input')?.value || '10');
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:2rem; color:var(--gray-400);">Tidak ada produk yang dapat ditambahkan</td></tr>`;
+        updateAddPricelistProductsSelection();
+        return;
+    }
+
+    tbody.innerHTML = filtered.map(p => {
+        const master = parseFloat(p.price || 0);
+        let initPrice = master;
+        if (mode === 'discount') initPrice = Math.max(1, Math.round(master * (1 - pct / 100)));
+        else if (mode === 'markup') initPrice = Math.round(master * (1 + pct / 100));
+
+        const catName = p.category || '-';
+
+        return `<tr data-product-id="${p.id}">
+            <td style="text-align:center;">
+                <input type="checkbox" class="add-pl-chk" value="${p.id}" onchange="updateAddPricelistProductsSelection()">
+            </td>
+            <td style="font-size:0.8rem; color:var(--blue-600); font-weight:600;">${p.sku || p.id}</td>
+            <td style="font-weight:600;">${p.name}</td>
+            <td style="color:var(--gray-500); font-size:0.85rem;">${catName}</td>
+            <td style="text-align:right; font-weight:500;">${rp(master)}</td>
+            <td style="text-align:right;">
+                <input type="number" class="inline-price-input add-pl-price-input"
+                    data-master="${master}"
+                    value="${initPrice}" min="1" step="1"
+                    style="width:120px; text-align:right;">
+            </td>
+        </tr>`;
+    }).join('');
+
+    const chkAll = document.getElementById('check-all-add-pl-prods');
+    if (chkAll) chkAll.checked = false;
+    updateAddPricelistProductsSelection();
+}
+
+function toggleSelectAllAddPricelistProducts(checked) {
+    document.querySelectorAll('.add-pl-chk').forEach(chk => { chk.checked = checked; });
+    updateAddPricelistProductsSelection();
+}
+
+function updateAddPricelistProductsSelection() {
+    const checked = document.querySelectorAll('.add-pl-chk:checked');
+    const countEl = document.getElementById('add-pl-selected-count');
+    if (countEl) countEl.textContent = `${checked.length} produk dipilih`;
+}
+
+async function submitAddPricelistProducts() {
+    const id = activePricelistId;
+    if (!id) return;
+    const checkedRows = Array.from(document.querySelectorAll('.add-pl-chk:checked')).map(chk => chk.closest('tr'));
+    if (checkedRows.length === 0) {
+        showToast('Pilih minimal 1 produk untuk ditambahkan', 'warning');
+        return;
+    }
+
+    const items = [];
+    for (const row of checkedRows) {
+        const prodId = row.dataset.productId;
+        const priceInp = row.querySelector('.add-pl-price-input');
+        const harga = parseFloat(priceInp?.value || '0');
+        if (isNaN(harga) || harga <= 0) {
+            showToast(`Harga untuk produk ${prodId} harus lebih besar dari 0`, 'warning');
+            return;
+        }
+        items.push({ product_id: prodId, harga });
+    }
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}/items`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ items })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-add-pricelist-products');
+            showToast(`${items.length} produk berhasil ditambahkan ke pricelist!`, 'success');
+            await openPricelistDetail(id);
+            await fetchPricelists();
+        } else {
+            showToast(data.error || 'Gagal menyimpan item ke pricelist', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal menyimpan', 'error');
+    }
+}
+
+// ── Modal CSV Import ──────────────────────────────────────────────────────
+function openPricelistCsvModal() {
+    plCsvParsedRows = [];
+    const previewContainer = document.getElementById('pl-csv-preview-container');
+    const previewBody = document.getElementById('pl-csv-preview-body');
+    const fileInp = document.getElementById('pl-csv-file-input');
+    const txtArea = document.getElementById('pl-csv-textarea');
+    const submitBtn = document.getElementById('btn-submit-csv-items');
+
+    if (previewContainer) previewContainer.style.display = 'none';
+    if (previewBody) previewBody.innerHTML = '';
+    if (fileInp) fileInp.value = '';
+    if (txtArea) txtArea.value = '';
+    if (submitBtn) submitBtn.disabled = true;
+
+    openModal('modal-import-pricelist-csv');
+}
+
+function downloadPricelistCsvTemplate() {
+    const lines = ['kode_produk,harga'];
+    const sample = PRODUCTS.slice(0, 5);
+    sample.forEach(p => {
+        lines.push(`${p.sku || p.id},${Math.round(p.price || 50000)}`);
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'template_pricelist.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function handlePricelistCsvFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const text = e.target.result;
+        const txtArea = document.getElementById('pl-csv-textarea');
+        if (txtArea) txtArea.value = text;
+        parsePricelistCsvText(text);
+    };
+    reader.readAsText(file);
+}
+
+function parsePricelistCsvText(text) {
+    if (!text || !text.trim()) {
+        document.getElementById('pl-csv-preview-container').style.display = 'none';
+        document.getElementById('btn-submit-csv-items').disabled = true;
+        plCsvParsedRows = [];
+        return;
+    }
+
+    const lines = text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+
+    // Detect delimiter: comma, semicolon, tab
+    const firstLine = lines[0];
+    let delimiter = ',';
+    if (firstLine.includes(';') && !firstLine.includes(',')) delimiter = ';';
+    else if (firstLine.includes('\t')) delimiter = '\t';
+
+    let startIndex = 0;
+    let codeCol = 0;
+    let priceCol = 1;
+
+    // Check if line 0 is a header
+    const headerCols = firstLine.split(delimiter).map(c => c.replace(/"/g, '').trim().toLowerCase());
+    const isHeader = headerCols.some(c => c.includes('kode') || c.includes('sku') || c.includes('product') || c.includes('harga') || c.includes('price'));
+    if (isHeader) {
+        startIndex = 1;
+        const foundCode = headerCols.findIndex(c => c.includes('kode') || c.includes('sku') || c.includes('product') || c === 'id');
+        const foundPrice = headerCols.findIndex(c => c.includes('harga') || c.includes('price'));
+        if (foundCode !== -1) codeCol = foundCode;
+        if (foundPrice !== -1) priceCol = foundPrice;
+    }
+
+    const previewBody = document.getElementById('pl-csv-preview-body');
+    const validBadge = document.getElementById('pl-csv-valid-badge');
+    const invalidBadge = document.getElementById('pl-csv-invalid-badge');
+    const submitBtn = document.getElementById('btn-submit-csv-items');
+
+    plCsvParsedRows = [];
+    let validCount = 0;
+    let invalidCount = 0;
+    const htmlRows = [];
+
+    // Map for deduplication (last write wins per Rule 7)
+    const dedupMap = new Map();
+
+    for (let i = startIndex; i < lines.length; i++) {
+        const rawLine = lines[i];
+        const cols = rawLine.split(delimiter).map(c => c.replace(/"/g, '').trim());
+        const codeInput = cols[codeCol] || '';
+        const priceInput = cols[priceCol] || '';
+
+        const lineNum = i + 1;
+        let isValid = true;
+        let errorReason = '';
+        let matchedProduct = null;
+
+        if (!codeInput) {
+            isValid = false;
+            errorReason = 'Kode produk kosong';
+        } else {
+            // Find in PRODUCTS by SKU or ID or Name
+            matchedProduct = PRODUCTS.find(p =>
+                (p.sku && p.sku.toLowerCase() === codeInput.toLowerCase()) ||
+                (p.id && p.id.toLowerCase() === codeInput.toLowerCase()) ||
+                p.name.toLowerCase() === codeInput.toLowerCase()
+            );
+            if (!matchedProduct) {
+                isValid = false;
+                errorReason = `Produk '${codeInput}' tidak ditemukan di master`;
+            }
+        }
+
+        const hargaNum = parseFloat(priceInput.replace(/[^\d.-]/g, ''));
+        if (isValid) {
+            if (isNaN(hargaNum) || hargaNum <= 0) {
+                isValid = false;
+                errorReason = 'Harga tidak valid (harus angka > 0)';
+            }
+        }
+
+        if (isValid && matchedProduct) {
+            validCount++;
+            dedupMap.set(matchedProduct.id, {
+                product_id: matchedProduct.id,
+                harga: hargaNum,
+                name: matchedProduct.name,
+                code: codeInput
+            });
+            htmlRows.push(`
+                <tr style="background:#f0fdf4;">
+                    <td style="font-size:0.8rem; color:var(--gray-500);">${lineNum}</td>
+                    <td style="font-weight:600; font-size:0.85rem;">${codeInput}</td>
+                    <td style="font-weight:500;">${matchedProduct.name}</td>
+                    <td style="text-align:right; font-weight:600; color:var(--emerald-600);">${rp(hargaNum)}</td>
+                    <td><span class="badge-status aman">Valid</span></td>
+                </tr>
+            `);
+        } else {
+            invalidCount++;
+            htmlRows.push(`
+                <tr style="background:#fef2f2;">
+                    <td style="font-size:0.8rem; color:var(--gray-500);">${lineNum}</td>
+                    <td style="font-weight:600; font-size:0.85rem;">${codeInput || '-'}</td>
+                    <td style="color:var(--gray-400);">${matchedProduct?.name || '—'}</td>
+                    <td style="text-align:right; color:var(--gray-400);">${priceInput || '—'}</td>
+                    <td><span class="badge-status bad" style="font-size:0.75rem;">${errorReason}</span></td>
+                </tr>
+            `);
+        }
+    }
+
+    plCsvParsedRows = Array.from(dedupMap.values());
+
+    if (previewBody) previewBody.innerHTML = htmlRows.join('');
+    if (validBadge) validBadge.textContent = `${validCount} baris valid (${plCsvParsedRows.length} produk unik)`;
+    if (invalidBadge) invalidBadge.textContent = `${invalidCount} baris error`;
+
+    const previewContainer = document.getElementById('pl-csv-preview-container');
+    if (previewContainer) previewContainer.style.display = 'block';
+
+    if (submitBtn) {
+        submitBtn.disabled = plCsvParsedRows.length === 0;
+        submitBtn.innerHTML = `<i data-lucide="check-circle"></i> Simpan ${plCsvParsedRows.length} Item Valid`;
+    }
+    if (window.lucide) lucide.createIcons();
+}
+
+async function submitPricelistCsvItems() {
+    const id = activePricelistId;
+    if (!id || plCsvParsedRows.length === 0) return;
+
+    const items = plCsvParsedRows.map(r => ({ product_id: r.product_id, harga: r.harga }));
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}/items`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ items })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-import-pricelist-csv');
+            showToast(`${items.length} produk berhasil diimpor ke pricelist!`, 'success');
+            plCsvParsedRows = [];
+            await openPricelistDetail(id);
+            await fetchPricelists();
+        } else {
+            showToast(data.error || 'Gagal menyimpan item import', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal mengimpor CSV', 'error');
+    }
+}
+
+// ── Modal Bulk Percent ─────────────────────────────────────────────────────
+function openPricelistBulkPercentModal() {
+    const id = activePricelistId;
+    if (!id) return;
+    const checked = document.querySelectorAll('.pl-item-chk:checked');
+    const targetSelect = document.getElementById('bulk-percent-target');
+    if (targetSelect) {
+        targetSelect.value = checked.length > 0 ? 'selected' : 'all';
+    }
+    const valInp = document.getElementById('bulk-percent-value');
+    if (valInp && !valInp.value) valInp.value = '90';
+    openModal('modal-pricelist-bulk-percent');
+}
+
+async function applyPricelistBulkPercent() {
+    const id = activePricelistId;
+    if (!id || !pricelistDetailData?.items?.length) return;
+
+    const target = document.getElementById('bulk-percent-target')?.value || 'all';
+    const pct = parseFloat(document.getElementById('bulk-percent-value')?.value || '90');
+    const round = parseInt(document.getElementById('bulk-percent-round')?.value || '100', 10);
+
+    if (isNaN(pct) || pct <= 0) {
+        showToast('Masukkan persentase yang valid (> 0)', 'warning');
+        return;
+    }
+
+    const checkedIds = new Set(Array.from(document.querySelectorAll('.pl-item-chk:checked')).map(c => c.value));
+
+    let targetItems = pricelistDetailData.items;
+    if (target === 'selected') {
+        targetItems = targetItems.filter(i => checkedIds.has(i.product_id));
+        if (targetItems.length === 0) {
+            showToast('Tidak ada produk yang dicentang di tabel', 'warning');
+            return;
+        }
+    }
+
+    const items = targetItems.map(item => {
+        const master = parseFloat(item.harga_master || 0);
+        let calcPrice = master * (pct / 100);
+        if (round > 1) {
+            calcPrice = Math.round(calcPrice / round) * round;
+        } else {
+            calcPrice = Math.round(calcPrice);
+        }
+        calcPrice = Math.max(1, calcPrice);
+        return { product_id: item.product_id, harga: calcPrice };
+    });
+
+    try {
+        const res = await fetch(`/api/pricelists/${id}/items`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ items })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            closeModal('modal-pricelist-bulk-percent');
+            showToast(`Harga massal berhasil diterapkan ke ${items.length} produk (${pct}% dari master)`, 'success');
+            await openPricelistDetail(id);
+        } else {
+            showToast(data.error || 'Gagal mengubah harga', 'error');
+        }
+    } catch (err) {
+        showToast('Gagal memperbarui harga', 'error');
+    }
+}
+
+// ── Search & Filter Bindings ───────────────────────────────────────────────
+document.getElementById('pricelist-search')?.addEventListener('input', () => renderPricelistsTable());
+document.getElementById('pricelist-status-filter')?.addEventListener('change', () => renderPricelistsTable());
+
+// ── Backward-compatibility aliases ─────────────────────────────────────────
+window.saveCreatePricelist = submitCreatePricelist;
+window.saveEditPricelist = submitEditPricelist;
+window.duplicatePricelist = openDuplicatePricelistModal;
+window.saveAddPricelistProducts = submitAddPricelistProducts;
+window.importPricelistCsv = submitPricelistCsvItems;
+
 

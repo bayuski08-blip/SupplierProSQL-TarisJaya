@@ -37,7 +37,7 @@ const formatDateStr = (val) => {
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Redirect landing page to login page
 app.get(['/', '/index.html'], (req, res) => {
@@ -179,6 +179,54 @@ pool.query(`
     console.log('[Startup] invoice_counters table ready.');
   } catch (err) {
     console.error('[Startup] Failed to create invoice_counters table:', err.message);
+  }
+})();
+
+// Auto-migrate: ensure pricelists, pricelist_items, and customers.pricelist_id exist
+(async () => {
+  try {
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS pricelists (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        kode VARCHAR(20) NOT NULL UNIQUE,
+        nama VARCHAR(100) NOT NULL,
+        keterangan VARCHAR(255) NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS pricelist_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        pricelist_id INT NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        harga DECIMAL(20,4) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_pricelist_product (pricelist_id, product_id),
+        KEY idx_pricelist_items_product (product_id),
+        CONSTRAINT fk_pli_pricelist FOREIGN KEY (pricelist_id) REFERENCES pricelists(id) ON DELETE CASCADE,
+        CONSTRAINT fk_pli_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+      )
+    `);
+
+    const [cols] = await mysqlPool.query("SHOW COLUMNS FROM customers LIKE 'pricelist_id'");
+    if (!cols || cols.length === 0) {
+      await mysqlPool.query(`
+        ALTER TABLE customers
+        ADD COLUMN pricelist_id INT NULL AFTER customer_category_id,
+        ADD CONSTRAINT fk_customers_pricelist
+          FOREIGN KEY (pricelist_id) REFERENCES pricelists(id) ON DELETE SET NULL
+      `);
+      console.log('[Startup] Column pricelist_id added to customers table.');
+    }
+
+    await mysqlPool.query("INSERT IGNORE INTO settings (`key`, value) VALUES ('prefix_pricelist', 'PL')");
+    console.log('[Startup] Pricelist tables and settings ready.');
+  } catch (err) {
+    console.error('[Startup] Failed to check/migrate pricelist tables:', err.message);
   }
 })();
 
@@ -347,6 +395,34 @@ async function generateInvoiceId(pgClient, invoiceDate) {
   const nextNum = Number(result.rows[0].next_number);
   const padded = String(nextNum).padStart(5, '0');
   return `INV-${year}-${mm}-${padded}`;
+}
+
+/**
+ * Generates the next payment reference number using an atomic per-year counter.
+ * Format: PAY-{YYYY}-{MM}-{NNNNN}
+ * - Sequence resets only on year change, NOT on month change.
+ * - Uses LAST_INSERT_ID() trick for race-condition-safe increment.
+ * - Must be called within an open transaction (pgify client), so rollback works.
+ *
+ * @param {object} pgClient pgify-wrapped client from pool.connect()
+ * @param {string} paymentDate ISO date string of the payment (e.g. '2026-10-14')
+ * @returns {string} e.g. 'PAY-2026-10-00001'
+ */
+async function generatePaymentNo(pgClient, paymentDate) {
+  const d = paymentDate ? new Date(paymentDate) : new Date();
+  const year = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+
+  await pgClient.query(
+    `INSERT INTO payment_counters (year, last_number) VALUES (?, LAST_INSERT_ID(1))
+     ON DUPLICATE KEY UPDATE last_number = LAST_INSERT_ID(last_number + 1)`,
+    [year]
+  );
+
+  const result = await pgClient.query('SELECT LAST_INSERT_ID() AS next_number');
+  const nextNum = Number(result.rows[0].next_number);
+  const padded = String(nextNum).padStart(5, '0');
+  return `PAY-${year}-${mm}-${padded}`;
 }
 
 // Authentication Middleware
@@ -862,12 +938,153 @@ app.get('/api/dashboard/sales-composition', authenticateToken, async (req, res) 
 // --- Products Routes ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT p.*, c.name as category, u.name as unit 
-      FROM products p 
-      LEFT JOIN product_categories c ON p.category_id = c.id 
-      LEFT JOIN product_units u ON p.unit_id = u.id
-    `);
+    const { customer_id, page, limit: limitQ, q, search, category, stock_status, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(p.name LIKE ? OR p.sku LIKE ? OR p.brand LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern);
+    }
+
+    if (category && category !== 'all') {
+      whereConditions.push('(c.name = ? OR p.category_id = ?)');
+      params.push(category, category);
+    }
+
+    if (stock_status === 'low') {
+      whereConditions.push('p.stock <= p.min_stock');
+    } else if (stock_status === 'safe') {
+      whereConditions.push('p.stock > p.min_stock');
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      const countSql = `
+        SELECT 
+          COUNT(*) as total,
+          COALESCE(SUM(p.stock * p.cost_price), 0) AS total_stock_value
+        FROM products p 
+        LEFT JOIN product_categories c ON p.category_id = c.id
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+      const totalStockValue = parseFloat(countRes.rows[0]?.total_stock_value || 0);
+
+      let dataSql;
+      let dataParams = [...params];
+      if (customer_id) {
+        dataSql = `
+          SELECT 
+            p.*, 
+            c.name as category, 
+            u.name as unit,
+            pi.harga AS harga_pricelist,
+            COALESCE(pi.harga, p.sell_price) AS harga_efektif,
+            CASE WHEN pi.harga IS NOT NULL THEN 'pricelist' ELSE 'master' END AS sumber_harga,
+            pl.id AS pricelist_id,
+            pl.nama AS pricelist_nama,
+            pl.kode AS pricelist_kode
+          FROM products p 
+          LEFT JOIN product_categories c ON p.category_id = c.id 
+          LEFT JOIN product_units u ON p.unit_id = u.id
+          LEFT JOIN customers cust ON cust.id = ?
+          LEFT JOIN pricelists pl ON pl.id = cust.pricelist_id AND pl.is_active = 1
+          LEFT JOIN pricelist_items pi ON pi.pricelist_id = pl.id AND pi.product_id = p.id
+          ${whereClause}
+          ORDER BY p.name ASC, p.id ASC
+          LIMIT ? OFFSET ?
+        `;
+        dataParams = [customer_id, ...params, limitNum, offset];
+      } else {
+        dataSql = `
+          SELECT 
+            p.*, 
+            c.name as category, 
+            u.name as unit,
+            NULL AS harga_pricelist,
+            p.sell_price AS harga_efektif,
+            'master' AS sumber_harga,
+            NULL AS pricelist_id,
+            NULL AS pricelist_nama,
+            NULL AS pricelist_kode
+          FROM products p 
+          LEFT JOIN product_categories c ON p.category_id = c.id 
+          LEFT JOIN product_units u ON p.unit_id = u.id
+          ${whereClause}
+          ORDER BY p.name ASC, p.id ASC
+          LIMIT ? OFFSET ?
+        `;
+        dataParams = [...params, limitNum, offset];
+      }
+
+      const result = await pool.query(dataSql, dataParams);
+      return res.json({
+        data: result.rows,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        },
+        summary: {
+          totalStockValue
+        }
+      });
+    }
+
+    // Unpaginated path (for backward compatibility: dropdowns, POS, test scripts)
+    let result;
+    if (customer_id) {
+      result = await pool.query(`
+        SELECT 
+          p.*, 
+          c.name as category, 
+          u.name as unit,
+          pi.harga AS harga_pricelist,
+          COALESCE(pi.harga, p.sell_price) AS harga_efektif,
+          CASE WHEN pi.harga IS NOT NULL THEN 'pricelist' ELSE 'master' END AS sumber_harga,
+          pl.id AS pricelist_id,
+          pl.nama AS pricelist_nama,
+          pl.kode AS pricelist_kode
+        FROM products p 
+        LEFT JOIN product_categories c ON p.category_id = c.id 
+        LEFT JOIN product_units u ON p.unit_id = u.id
+        LEFT JOIN customers cust ON cust.id = ?
+        LEFT JOIN pricelists pl ON pl.id = cust.pricelist_id AND pl.is_active = 1
+        LEFT JOIN pricelist_items pi ON pi.pricelist_id = pl.id AND pi.product_id = p.id
+        ${whereClause}
+        ORDER BY p.name ASC, p.id ASC
+      `, [customer_id, ...params]);
+    } else {
+      result = await pool.query(`
+        SELECT 
+          p.*, 
+          c.name as category, 
+          u.name as unit,
+          NULL AS harga_pricelist,
+          p.sell_price AS harga_efektif,
+          'master' AS sumber_harga,
+          NULL AS pricelist_id,
+          NULL AS pricelist_nama,
+          NULL AS pricelist_kode
+        FROM products p 
+        LEFT JOIN product_categories c ON p.category_id = c.id 
+        LEFT JOIN product_units u ON p.unit_id = u.id
+        ${whereClause}
+        ORDER BY p.name ASC, p.id ASC
+      `, params);
+    }
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -993,31 +1210,94 @@ const CUSTOMER_SELECT_SQL = `
   SELECT
     c.*,
     cc.name AS category_name,
+    pl.nama AS pricelist_name,
+    pl.kode AS pricelist_kode,
     COALESCE(SUM(CASE WHEN si.status != 'Batal' THEN si.total ELSE 0 END), 0) AS total_belanja,
     COALESCE(SUM(CASE WHEN si.status NOT IN ('Lunas','Batal') THEN si.total - si.paid_amount ELSE 0 END), 0) AS total_piutang_berjalan,
     c.credit_lmt - COALESCE(SUM(CASE WHEN si.status NOT IN ('Lunas','Batal') THEN si.total - si.paid_amount ELSE 0 END), 0) AS sisa_limit_piutang
   FROM customers c
   LEFT JOIN customer_categories cc ON c.customer_category_id = cc.id
+  LEFT JOIN pricelists pl ON c.pricelist_id = pl.id
   LEFT JOIN sales_invoices si ON si.customer_id = c.id
 `;
 
-app.get('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir', 'finance'), async (req, res) => {
+app.get('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'owner'), async (req, res) => {
   try {
-    const result = await pool.query(CUSTOMER_SELECT_SQL + ' GROUP BY c.id, cc.name ORDER BY c.name ASC');
+    const { page, limit: limitQ, q, search, category, type, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(c.name LIKE ? OR c.phone LIKE ? OR c.id LIKE ? OR c.city LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern, pattern);
+    }
+
+    const catQuery = (type || category || '').trim();
+    if (catQuery && catQuery !== 'all') {
+      whereConditions.push('(cc.name = ? OR c.customer_category_id = ?)');
+      params.push(catQuery, catQuery);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      const countSql = `
+        SELECT COUNT(DISTINCT c.id) AS total
+        FROM customers c
+        LEFT JOIN customer_categories cc ON c.customer_category_id = cc.id
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      const dataSql = CUSTOMER_SELECT_SQL + `
+        ${whereClause}
+        GROUP BY c.id, cc.name, pl.nama, pl.kode
+        ORDER BY c.name ASC, c.id ASC
+        LIMIT ? OFFSET ?
+      `;
+      const dataParams = [...params, limitNum, offset];
+      const result = await pool.query(dataSql, dataParams);
+
+      return res.json({
+        data: result.rows,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        }
+      });
+    }
+
+    const result = await pool.query(
+      CUSTOMER_SELECT_SQL + `
+      ${whereClause}
+      GROUP BY c.id, cc.name, pl.nama, pl.kode
+      ORDER BY c.name ASC, c.id ASC
+    `, params);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/customers/search', authenticateToken, authorizeRoles('admin', 'kasir', 'finance'), async (req, res) => {
+app.get('/api/customers/search', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'owner'), async (req, res) => {
   const { q } = req.query;
   const pattern = `%${q || ''}%`;
   try {
     const result = await pool.query(
       CUSTOMER_SELECT_SQL +
       ` WHERE (c.name LIKE ? OR c.phone LIKE ? OR c.id LIKE ?)
-        GROUP BY c.id, cc.name
+        GROUP BY c.id, cc.name, pl.nama, pl.kode
         ORDER BY c.name ASC
         LIMIT 20`,
       [pattern, pattern, pattern]
@@ -1028,11 +1308,11 @@ app.get('/api/customers/search', authenticateToken, authorizeRoles('admin', 'kas
   }
 });
 
-app.get('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir', 'finance'), async (req, res) => {
+app.get('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'owner'), async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query(
-      CUSTOMER_SELECT_SQL + ' WHERE c.id = $1 GROUP BY c.id, cc.name',
+      CUSTOMER_SELECT_SQL + ' WHERE c.id = $1 GROUP BY c.id, cc.name, pl.nama, pl.kode',
       [id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
@@ -1042,35 +1322,53 @@ app.get('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir'
   }
 });
 
-app.post('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir'), async (req, res) => {
-  const { name, customer_category_id, phone, city, address, credit_lmt, ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2 } = req.body;
+app.post('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir', 'owner'), async (req, res) => {
+  const { name, customer_category_id, pricelist_id, phone, city, address, credit_lmt, ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2 } = req.body;
 
   // Validasi backend
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Nama pelanggan wajib diisi' });
   if (ktp && !/^\d{16}$/.test(ktp)) return res.status(400).json({ error: 'Nomor KTP harus 16 digit angka' });
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Format email tidak valid' });
 
-  const insertQuery = 'INSERT INTO customers (id, name, customer_category_id, phone, city, address, credit_lmt, ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)';
+  const plId = (pricelist_id !== undefined && pricelist_id !== null && String(pricelist_id).trim() !== '') ? parseInt(pricelist_id, 10) : null;
+  if (plId) {
+    const plCheck = await pool.query('SELECT id FROM pricelists WHERE id = ? AND is_active = 1', [plId]);
+    if (plCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Pricelist tidak ditemukan atau tidak aktif' });
+    }
+  }
+
+  const insertQuery = 'INSERT INTO customers (id, name, customer_category_id, pricelist_id, phone, city, address, credit_lmt, ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)';
   try {
     const prefix = await getSetting('prefix_customer', 'C');
     const id = await generateNextId(pool, 'customers', prefix);
-    await pool.query(insertQuery, [id, name, customer_category_id, phone, city, address, credit_lmt, ktp || null, npwp || null, npwp_name || null, npwp_address || null, nib || null, email || null, no_hp_2 || null]);
-    res.json({ success: true });
+    await pool.query(insertQuery, [id, name.trim(), customer_category_id || null, plId, phone, city, address, credit_lmt || 0, ktp || null, npwp || null, npwp_name || null, npwp_address || null, nib || null, email || null, no_hp_2 || null]);
+    res.json({ success: true, id });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-app.put('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir'), async (req, res) => {
+app.put('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir', 'owner'), async (req, res) => {
   const { id } = req.params;
-  const { name, customer_category_id, phone, city, address, credit_lmt, ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2 } = req.body;
+  const { name, customer_category_id, pricelist_id, phone, city, address, credit_lmt, ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2 } = req.body;
 
   // Validasi backend
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Nama pelanggan wajib diisi' });
   if (ktp && !/^\d{16}$/.test(ktp)) return res.status(400).json({ error: 'Nomor KTP harus 16 digit angka' });
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Format email tidak valid' });
 
-  const updateQuery = 'UPDATE customers SET name = $1, customer_category_id = $2, phone = $3, city = $4, address = $5, credit_lmt = $6, ktp = $7, npwp = $8, npwp_name = $9, npwp_address = $10, nib = $11, email = $12, no_hp_2 = $13 WHERE id = $14';
+  const plId = (pricelist_id !== undefined && pricelist_id !== null && String(pricelist_id).trim() !== '') ? parseInt(pricelist_id, 10) : null;
+  if (plId) {
+    const plCheck = await pool.query('SELECT id FROM pricelists WHERE id = ? AND is_active = 1', [plId]);
+    if (plCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Pricelist tidak ditemukan atau tidak aktif' });
+    }
+  }
+
+  const updateQuery = 'UPDATE customers SET name = $1, customer_category_id = $2, pricelist_id = $3, phone = $4, city = $5, address = $6, credit_lmt = $7, ktp = $8, npwp = $9, npwp_name = $10, npwp_address = $11, nib = $12, email = $13, no_hp_2 = $14 WHERE id = $15';
   try {
-    const result = await pool.query(updateQuery, [name, customer_category_id, phone, city, address, credit_lmt, ktp || null, npwp || null, npwp_name || null, npwp_address || null, nib || null, email || null, no_hp_2 || null, id]);
+    const result = await pool.query(updateQuery, [name.trim(), customer_category_id || null, plId, phone, city, address, credit_lmt || 0, ktp || null, npwp || null, npwp_name || null, npwp_address || null, nib || null, email || null, no_hp_2 || null, id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
     }
@@ -1080,7 +1378,7 @@ app.put('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir'
   }
 });
 
-app.delete('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir'), async (req, res) => {
+app.delete('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir', 'owner'), async (req, res) => {
   const { id } = req.params;
   const deleteQuery = 'DELETE FROM customers WHERE id = $1';
   try {
@@ -1094,13 +1392,457 @@ app.delete('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kas
   }
 });
 
+// --- Pricelist Helper & Routes ---
+
+/**
+ * 4.1 Helper: Sumber kebenaran harga efektif penjualan per customer
+ */
+async function getEffectivePrices(customerId, productIds = null) {
+  let query = `
+    SELECT 
+      p.id AS product_id,
+      p.sku,
+      p.name AS product_name,
+      p.sell_price AS harga_master,
+      p.cost_price AS hpp,
+      pi.harga AS harga_pricelist,
+      COALESCE(pi.harga, p.sell_price) AS harga_efektif,
+      CASE WHEN pi.harga IS NOT NULL THEN 'pricelist' ELSE 'master' END AS sumber_harga,
+      pl.id AS pricelist_id,
+      pl.kode AS pricelist_kode,
+      pl.nama AS pricelist_nama
+    FROM products p
+    LEFT JOIN customers c ON c.id = ?
+    LEFT JOIN pricelists pl ON pl.id = c.pricelist_id AND pl.is_active = 1
+    LEFT JOIN pricelist_items pi ON pi.pricelist_id = pl.id AND pi.product_id = p.id
+  `;
+  const params = [customerId || null];
+
+  if (Array.isArray(productIds) && productIds.length > 0) {
+    const placeholders = productIds.map(() => '?').join(',');
+    query += ` WHERE p.id IN (${placeholders})`;
+    params.push(...productIds);
+  }
+
+  query += ` ORDER BY p.name ASC`;
+  const result = await pool.query(query, params);
+  return result.rows;
+}
+
+/**
+ * Helper: Generate kode unik pricelist (contoh: PL000001)
+ */
+async function generatePricelistCode(clientOrPool) {
+  const prefix = await getSetting('prefix_pricelist', 'PL');
+  const result = await clientOrPool.query('SELECT kode FROM pricelists WHERE kode LIKE ?', [prefix + '%']);
+  let maxNum = 0;
+  for (const row of result.rows) {
+    const codeStr = row.kode;
+    if (codeStr && codeStr.startsWith(prefix)) {
+      const suffix = codeStr.substring(prefix.length);
+      const num = parseInt(suffix, 10);
+      if (!isNaN(num) && num > maxNum) {
+        maxNum = num;
+      }
+    }
+  }
+  const nextNum = maxNum + 1;
+  return prefix + String(nextNum).padStart(6, '0');
+}
+
+// GET /api/pricelists - Daftar pricelist + jumlah produk + jumlah customer
+app.get('/api/pricelists', authenticateToken, authorizeRoles('admin', 'owner', 'kasir', 'finance'), async (req, res) => {
+  try {
+    const isAktifOnly = req.query.aktif === '1' || req.query.is_active === '1';
+    let query = `
+      SELECT 
+        pl.id,
+        pl.kode,
+        pl.nama,
+        pl.keterangan,
+        pl.is_active,
+        pl.created_at,
+        pl.updated_at,
+        COUNT(DISTINCT pi.product_id) AS total_items,
+        COUNT(DISTINCT c.id) AS total_customers
+      FROM pricelists pl
+      LEFT JOIN pricelist_items pi ON pi.pricelist_id = pl.id
+      LEFT JOIN customers c ON c.pricelist_id = pl.id
+    `;
+    if (isAktifOnly) {
+      query += ` WHERE pl.is_active = 1`;
+    }
+    query += `
+      GROUP BY pl.id, pl.kode, pl.nama, pl.keterangan, pl.is_active, pl.created_at, pl.updated_at
+      ORDER BY pl.id DESC
+    `;
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/pricelists/effective-prices - Harga efektif untuk customer tertentu
+app.get('/api/pricelists/effective-prices', authenticateToken, authorizeRoles('admin', 'owner', 'kasir', 'finance'), async (req, res) => {
+  try {
+    const { customer_id } = req.query;
+    const prices = await getEffectivePrices(customer_id);
+
+    // Sanitasi respons: sembunyikan HPP untuk role kasir jika tidak berhak
+    const userRole = (req.user?.role || '').toLowerCase();
+    const canSeeHpp = userRole === 'admin' || userRole === 'owner' || userRole === 'gudang';
+    if (!canSeeHpp) {
+      prices.forEach(p => {
+        delete p.hpp;
+      });
+    }
+
+    // Ambil info pricelist customer jika ada
+    let customerPricelist = null;
+    if (customer_id) {
+      const custRes = await pool.query(`
+        SELECT pl.id, pl.kode, pl.nama, pl.is_active 
+        FROM customers c 
+        JOIN pricelists pl ON pl.id = c.pricelist_id 
+        WHERE c.id = ?
+      `, [customer_id]);
+      if (custRes.rows.length > 0) {
+        customerPricelist = custRes.rows[0];
+      }
+    }
+
+    res.json({
+      success: true,
+      customer_id: customer_id || null,
+      pricelist: customerPricelist,
+      prices
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pricelists - Buat pricelist baru
+app.post('/api/pricelists', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+  const { nama, keterangan } = req.body;
+  if (!nama || !nama.trim()) {
+    return res.status(400).json({ error: 'Nama pricelist wajib diisi' });
+  }
+
+  try {
+    // Cek keunikan nama case-insensitive (R6/Spec 4.3)
+    const existing = await pool.query('SELECT id FROM pricelists WHERE LOWER(nama) = LOWER(?)', [nama.trim()]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Nama pricelist sudah digunakan' });
+    }
+
+    const kode = await generatePricelistCode(pool);
+    const result = await pool.query(
+      'INSERT INTO pricelists (kode, nama, keterangan, is_active) VALUES (?, ?, ?, 1)',
+      [kode, nama.trim(), keterangan ? keterangan.trim() : null]
+    );
+
+    res.json({
+      success: true,
+      message: 'Pricelist berhasil dibuat',
+      data: {
+        id: result.insertId,
+        kode,
+        nama: nama.trim(),
+        keterangan: keterangan ? keterangan.trim() : null,
+        is_active: 1
+      }
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// GET /api/pricelists/:id - Detail pricelist + item dengan harga master & HPP
+app.get('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner', 'kasir', 'finance'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const plRes = await pool.query('SELECT * FROM pricelists WHERE id = ?', [id]);
+    if (plRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pricelist tidak ditemukan' });
+    }
+
+    const custCountRes = await pool.query('SELECT COUNT(*) AS total_customers FROM customers WHERE pricelist_id = ?', [id]);
+    const totalCustomers = Number(custCountRes.rows[0]?.total_customers || 0);
+
+    const itemsRes = await pool.query(`
+      SELECT 
+        pi.id,
+        pi.pricelist_id,
+        pi.product_id,
+        pi.harga,
+        p.sku,
+        p.brand,
+        p.name AS product_name,
+        p.sell_price AS harga_master,
+        p.cost_price AS hpp,
+        u.name AS unit
+      FROM pricelist_items pi
+      JOIN products p ON p.id = pi.product_id
+      LEFT JOIN product_units u ON p.unit_id = u.id
+      WHERE pi.pricelist_id = ?
+      ORDER BY p.name ASC
+    `, [id]);
+
+    // Sanitasi respons berbasis role (Spec 4.4)
+    const userRole = (req.user?.role || '').toLowerCase();
+    const canSeeHpp = userRole === 'admin' || userRole === 'owner' || userRole === 'gudang';
+    const items = itemsRes.rows.map(item => {
+      const it = { ...item };
+      if (!canSeeHpp) {
+        delete it.hpp;
+      }
+      return it;
+    });
+
+    res.json({
+      ...plRes.rows[0],
+      total_customers: totalCustomers,
+      items
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/pricelists/:id - Ubah nama, keterangan, is_active
+app.put('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+  const { id } = req.params;
+  const { nama, keterangan, is_active } = req.body;
+
+  try {
+    const plRes = await pool.query('SELECT * FROM pricelists WHERE id = ?', [id]);
+    if (plRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Pricelist tidak ditemukan' });
+    }
+
+    if (nama !== undefined) {
+      if (!nama || !nama.trim()) {
+        return res.status(400).json({ error: 'Nama pricelist tidak boleh kosong' });
+      }
+      const existing = await pool.query(
+        'SELECT id FROM pricelists WHERE LOWER(nama) = LOWER(?) AND id != ?',
+        [nama.trim(), id]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: 'Nama pricelist sudah digunakan' });
+      }
+    }
+
+    const currentPl = plRes.rows[0];
+    const newNama = nama !== undefined ? nama.trim() : currentPl.nama;
+    const newKeterangan = keterangan !== undefined ? (keterangan ? keterangan.trim() : null) : currentPl.keterangan;
+    const newActive = is_active !== undefined ? (is_active ? 1 : 0) : currentPl.is_active;
+
+    await pool.query(
+      'UPDATE pricelists SET nama = ?, keterangan = ?, is_active = ? WHERE id = ?',
+      [newNama, newKeterangan, newActive, id]
+    );
+
+    res.json({ success: true, message: 'Pricelist berhasil diperbarui' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// DELETE /api/pricelists/:id - Hapus pricelist (R7: tolak 409 jika sedang dipakai customer)
+app.delete('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const custRes = await pool.query('SELECT COUNT(*) AS total_customers FROM customers WHERE pricelist_id = ?', [id]);
+    const customerCount = Number(custRes.rows[0]?.total_customers || 0);
+
+    if (customerCount > 0) {
+      return res.status(409).json({
+        error: `Pricelist sedang digunakan oleh ${customerCount} pelanggan. Pricelist hanya boleh dinonaktifkan, tidak dapat dihapus permanen.`,
+        total_customers: customerCount
+      });
+    }
+
+    const result = await pool.query('DELETE FROM pricelists WHERE id = ?', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Pricelist tidak ditemukan' });
+    }
+
+    res.json({ success: true, message: 'Pricelist berhasil dihapus' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/pricelists/:id/duplicate - Duplikat pricelist beserta itemnya
+app.post('/api/pricelists/:id/duplicate', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+  const { id } = req.params;
+  const { nama } = req.body;
+
+  try {
+    const sourcePl = await pool.query('SELECT * FROM pricelists WHERE id = ?', [id]);
+    if (sourcePl.rows.length === 0) {
+      return res.status(404).json({ error: 'Pricelist sumber tidak ditemukan' });
+    }
+
+    let newNama = (nama && nama.trim()) ? nama.trim() : `${sourcePl.rows[0].nama} (Salinan)`;
+    // Pastikan nama baru unik
+    let counter = 1;
+    let checkNama = newNama;
+    while (true) {
+      const ex = await pool.query('SELECT id FROM pricelists WHERE LOWER(nama) = LOWER(?)', [checkNama]);
+      if (ex.rows.length === 0) {
+        newNama = checkNama;
+        break;
+      }
+      counter++;
+      checkNama = `${newNama} ${counter}`;
+    }
+
+    const newKode = await generatePricelistCode(pool);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const insPl = await client.query(
+        'INSERT INTO pricelists (kode, nama, keterangan, is_active) VALUES (?, ?, ?, 1)',
+        [newKode, newNama, sourcePl.rows[0].keterangan]
+      );
+      const newId = insPl.insertId;
+
+      await client.query(`
+        INSERT INTO pricelist_items (pricelist_id, product_id, harga)
+        SELECT ?, product_id, harga FROM pricelist_items WHERE pricelist_id = ?
+      `, [newId, id]);
+
+      await client.query('COMMIT');
+      res.json({
+        success: true,
+        message: 'Pricelist berhasil diduplikat',
+        data: { id: newId, kode: newKode, nama: newNama }
+      });
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/pricelists/:id/items - Bulk upsert [{ product_id, harga }] (input massal & import CSV)
+app.put('/api/pricelists/:id/items', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+  const { id } = req.params;
+  const { items } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Daftar item tidak boleh kosong' });
+  }
+
+  try {
+    const plCheck = await pool.query('SELECT id FROM pricelists WHERE id = ?', [id]);
+    if (plCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Pricelist tidak ditemukan' });
+    }
+
+    // Validasi harga > 0 dan deduplikasi (ambil nilai terakhir jika produk sama) (Spec 4.3 & R5)
+    const dedupedMap = new Map();
+    for (const it of items) {
+      if (!it.product_id) continue;
+      const hargaNum = parseFloat(it.harga);
+      if (isNaN(hargaNum) || hargaNum <= 0) {
+        return res.status(400).json({ error: `Harga untuk produk '${it.product_id}' harus berupa angka lebih besar dari 0` });
+      }
+      dedupedMap.set(String(it.product_id), hargaNum);
+    }
+
+    if (dedupedMap.size === 0) {
+      return res.status(400).json({ error: 'Tidak ada item yang valid untuk disimpan' });
+    }
+
+    // Validasi apakah product_id valid ada di tabel products
+    const productIds = Array.from(dedupedMap.keys());
+    const placeholders = productIds.map(() => '?').join(',');
+    const prodRes = await pool.query(`SELECT id FROM products WHERE id IN (${placeholders})`, productIds);
+    const validProductIds = new Set(prodRes.rows.map(r => r.id));
+
+    const invalidProds = productIds.filter(pid => !validProductIds.has(pid));
+    if (invalidProds.length > 0) {
+      return res.status(400).json({ error: `Produk berikut tidak ditemukan: ${invalidProds.join(', ')}` });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const [prodId, hargaVal] of dedupedMap.entries()) {
+        await client.query(`
+          INSERT INTO pricelist_items (pricelist_id, product_id, harga)
+          VALUES (?, ?, ?)
+          ON DUPLICATE KEY UPDATE harga = VALUES(harga)
+        `, [id, prodId, hargaVal]);
+      }
+      await client.query('COMMIT');
+      res.json({
+        success: true,
+        message: `${dedupedMap.size} item berhasil disimpan ke pricelist`,
+        count: dedupedMap.size
+      });
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/pricelists/:id/items/:productId - Hapus satu item dari pricelist
+app.delete('/api/pricelists/:id/items/:productId', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+  const { id, productId } = req.params;
+  try {
+    const result = await pool.query(
+      'DELETE FROM pricelist_items WHERE pricelist_id = ? AND product_id = ?',
+      [id, productId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Item tidak ditemukan di pricelist ini' });
+    }
+    res.json({ success: true, message: 'Item berhasil dihapus dari pricelist' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Vendors Routes ---
 app.get('/api/vendors', authenticateToken, authorizeRoles('admin', 'gudang', 'finance'), async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT v.*, vc.name as category_name,
-        COALESCE(po_agg.total_purchases, 0) AS total_purchases,
-        COALESCE(po_agg.outstanding_debt, 0) AS outstanding_debt
+    const { page, limit: limitQ, q, search, category, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(v.name LIKE ? OR v.id LIKE ? OR v.phone LIKE ? OR v.city LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern, pattern);
+    }
+
+    if (category && category !== 'all') {
+      whereConditions.push('(vc.name = ? OR v.vendor_category_id = ?)');
+      params.push(category, category);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const baseVendorSql = `
       FROM vendors v
       LEFT JOIN vendor_categories vc ON v.vendor_category_id = vc.id
       LEFT JOIN (
@@ -1111,8 +1853,46 @@ app.get('/api/vendors', authenticateToken, authorizeRoles('admin', 'gudang', 'fi
         WHERE status != 'Batal'
         GROUP BY vendor_id
       ) po_agg ON po_agg.vendor_id = v.id
-      ORDER BY v.name ASC
-    `);
+      ${whereClause}
+    `;
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      const countSql = `SELECT COUNT(*) AS total FROM vendors v LEFT JOIN vendor_categories vc ON v.vendor_category_id = vc.id ${whereClause}`;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      const dataSql = `
+        SELECT v.*, vc.name as category_name,
+          COALESCE(po_agg.total_purchases, 0) AS total_purchases,
+          COALESCE(po_agg.outstanding_debt, 0) AS outstanding_debt
+        ${baseVendorSql}
+        ORDER BY v.name ASC, v.id ASC
+        LIMIT ? OFFSET ?
+      `;
+      const result = await pool.query(dataSql, [...params, limitNum, offset]);
+
+      return res.json({
+        data: result.rows,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        }
+      });
+    }
+
+    const result = await pool.query(`
+      SELECT v.*, vc.name as category_name,
+        COALESCE(po_agg.total_purchases, 0) AS total_purchases,
+        COALESCE(po_agg.outstanding_debt, 0) AS outstanding_debt
+      ${baseVendorSql}
+      ORDER BY v.name ASC, v.id ASC
+    `, params);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1122,26 +1902,115 @@ app.get('/api/vendors', authenticateToken, authorizeRoles('admin', 'gudang', 'fi
 // --- Invoices Routes (Sales) ---
 app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'finance'), async (req, res) => {
   try {
+    const { page, limit: limitQ, q, search, status, customer_id, date_from, date_to, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(si.id LIKE ? OR c.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern);
+    }
+
+    if (status && status !== 'all') {
+      const qStatus = status.toLowerCase();
+      if (qStatus.includes('belum')) {
+        whereConditions.push('LOWER(si.status) LIKE ?');
+        params.push('%belum%');
+      } else {
+        whereConditions.push('LOWER(si.status) = ?');
+        params.push(qStatus);
+      }
+    }
+
+    if (customer_id && customer_id !== 'all') {
+      whereConditions.push('si.customer_id = ?');
+      params.push(customer_id);
+    }
+
+    if (date_from) {
+      whereConditions.push('si.date >= ?');
+      params.push(date_from);
+    }
+    if (date_to) {
+      whereConditions.push('si.date <= ?');
+      params.push(date_to);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const todayStr = formatDateStr(new Date());
+    const mapInvoiceRow = (r) => {
+      const total = parseFloat(r.total || 0);
+      const paid = parseFloat(r.paid_amount || 0);
+      const sisa = Math.max(0, total - paid);
+      const dueDateStr = formatDateStr(r.due_date);
+      const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
+      return {
+        id: r.id,
+        date: formatDateStr(r.date),
+        customerId: r.customer_id,
+        customer: r.customer || 'Tanpa Pelanggan',
+        total: total,
+        paid: paid,
+        sisa: sisa,
+        isOverdue: isOverdue,
+        paidDate: formatDateStr(r.paid_date) || null,
+        type: r.payment_type_name || 'Tunai',
+        paymentTypeId: r.payment_type_id,
+        status: r.status,
+        dueDate: dueDateStr
+      };
+    };
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      const countSql = `
+        SELECT COUNT(*) AS total 
+        FROM sales_invoices si 
+        LEFT JOIN customers c ON si.customer_id = c.id 
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      const dataSql = `
+        SELECT si.*, c.name as customer, pt.name as payment_type_name
+        FROM sales_invoices si
+        LEFT JOIN customers c ON si.customer_id = c.id
+        LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+        ${whereClause}
+        ORDER BY si.date DESC, si.id DESC
+        LIMIT ? OFFSET ?
+      `;
+      const result = await pool.query(dataSql, [...params, limitNum, offset]);
+
+      return res.json({
+        data: result.rows.map(mapInvoiceRow),
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        }
+      });
+    }
+
     const result = await pool.query(`
       SELECT si.*, c.name as customer, pt.name as payment_type_name
       FROM sales_invoices si
       LEFT JOIN customers c ON si.customer_id = c.id
       LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+      ${whereClause}
       ORDER BY si.date DESC, si.id DESC
-    `);
-    res.json(result.rows.map(r => ({
-      id: r.id,
-      date: formatDateStr(r.date),
-      customerId: r.customer_id,
-      customer: r.customer || 'Tanpa Pelanggan',
-      total: parseFloat(r.total),
-      paid: parseFloat(r.paid_amount),
-      paidDate: formatDateStr(r.paid_date) || null,
-      type: r.payment_type_name || 'Tunai',
-      paymentTypeId: r.payment_type_id,
-      status: r.status,
-      dueDate: formatDateStr(r.due_date)
-    })));
+    `, params);
+    res.json(result.rows.map(mapInvoiceRow));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1222,6 +2091,7 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
         total: recalculatedTotal,
         subtotal: subtotal,
         tax: recalculatedTax,
+        ppn_enabled: ppnEnabled,
         payment_type_name: invoiceRow.payment_type_name || 'Tunai'
       },
       customer: {
@@ -1270,7 +2140,7 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
 
   console.log(`[Invoice Creation API] Selected Payment Type ID: "${payment_type_id}"`);
 
-  const insertInvoiceQuery = 'INSERT INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, payment_type_id, due_date, status, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)';
+  const insertInvoiceQuery = 'INSERT INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, payment_type_id, due_date, paid_date, status, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)';
   const updateStockQuery = 'UPDATE products SET stock = stock - $1 WHERE id = $2';
 
   const client = await pool.connect();
@@ -1298,12 +2168,13 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     const date = req.body.date ? req.body.date.split('T')[0] : new Date().toISOString().split('T')[0];
 
     // Determine status based on payment type:
-    // Tunai / Transfer = instant settlement (Lunas), Kredit X Hari = Belum Bayar
+    // Tunai / Transfer = instant settlement (Lunas), Kredit X Hari = Belum Lunas / Sebagian
     const instant = await isInstantPayment(payment_type_id);
     const effectivePaid = instant ? finalTotal : parseFloat(paid || 0);
     const status = instant ? 'Lunas'
       : (effectivePaid >= finalTotal ? 'Lunas'
-        : (effectivePaid > 0 ? 'Sebagian' : 'Belum Bayar'));
+        : (effectivePaid > 0 ? 'Sebagian' : 'Belum Lunas'));
+    const paidDate = status === 'Lunas' ? date : null;
 
     // Generate invoice ID using atomic per-year counter
     // Use date from request body so year/month match the invoice date (not server clock)
@@ -1311,7 +2182,7 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     const id = await generateInvoiceId(client, invoiceDateForId);
     
     console.log(`[Invoice Creation API] Saving invoice ${id} with payment_type_id: "${payment_type_id}"`);
-    await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, due_date, status, userId]);
+    await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, due_date, paidDate, status, userId]);
 
     // Reduce stock & insert items with HPP snapshot
     if (items && Array.isArray(items)) {
@@ -1336,12 +2207,25 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     if (effectivePaid > 0) {
       const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
       const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-      const ctDate = new Date().toISOString().split('T')[0];
+      const ctDate = date;
       const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [payment_type_id]);
       const method = ptNameRes.rows[0]?.name || 'Transfer Bank';
-      const cashCategory = status === 'Lunas' ? 'Penjualan' : 'Pelunasan Piutang';
+      const cashCategory = instant ? 'Penjualan' : 'Pelunasan Piutang';
+      const cashDesc = instant ? `Pembayaran Invoice ${id}` : `Uang Muka (DP) Invoice ${id}`;
       console.log(`[Invoice Creation API] Creating cash transaction for invoice ${id}. Paid: ${effectivePaid}, payment_type_id: "${payment_type_id}", method name: "${method}"`);
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, ctDate, 'IN', cashCategory, `Pembayaran Invoice ${id}`, effectivePaid, method, id, payment_type_id, userId]);
+      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, ctDate, 'IN', cashCategory, cashDesc, effectivePaid, method, id, payment_type_id, userId, 'active']);
+
+      // Record DP as first payment entry in sales_invoice_payments
+      if (!instant) {
+        const dpNo = await generatePaymentNo(client, date);
+        const dpNotes = req.body.payment_notes || req.body.dp_notes || 'Uang Muka (DP)';
+        await client.query(
+          `INSERT INTO sales_invoice_payments
+           (payment_no, invoice_id, payment_date, amount, payment_method, notes, is_down_payment, status, cash_transaction_id, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)`,
+          [dpNo, id, date, effectivePaid, method, dpNotes, ctId, userId]
+        );
+      }
     }
 
     await client.query('COMMIT');
@@ -1372,58 +2256,711 @@ app.post('/api/invoices/manual', authenticateToken, authorizeRoles('admin', 'kas
     res.status(400).json({ error: err.message });
   }
 });
-app.get('/api/finance/receivables', authenticateToken, authorizeRoles('admin', 'finance', 'kasir'), async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM sales_invoices WHERE status != $1 AND status != $2', ['Lunas', 'Batal']);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+
+/**
+ * POST /api/invoices/import-outstanding
+ * Import batch invoice outstanding (migrasi saldo piutang sistem lama).
+ * Hak akses: Administrator dan Finance
+ * Fitur:
+ * - Transaksional (BEGIN ... COMMIT / ROLLBACK)
+ * - Mencegah invoice lunas (total_dibayar == total) dan overpayment (total_dibayar > total)
+ * - Tipe pembayaran otomatis Kredit (jatuh tempo aktif, tanpa denda)
+ * - Jika total_dibayar > 0: otomatis buat 1 record di sales_invoice_payments bertanda 'Saldo awal hasil import'
+ * - Nomor invoice eksisting divalidasi keunikan di database dan di dalam batch
+ */
+app.post('/api/invoices/import-outstanding', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+  const { invoices } = req.body;
+  if (!Array.isArray(invoices) || invoices.length === 0) {
+    return res.status(400).json({ error: 'Data invoice untuk diimpor tidak boleh kosong' });
   }
-});
 
-app.post('/api/finance/receivables/:id/pay', authenticateToken, authorizeRoles('admin', 'finance', 'kasir'), async (req, res) => {
-  const { id } = req.params;
-  const { amount } = req.body;
+  const userId = req.user.id;
+  const todayStr = formatDateStr(new Date());
 
+  const client = await pool.connect();
   try {
-    const result = await pool.query('SELECT * FROM sales_invoices WHERE id = $1', [id]);
-    const invoice = result.rows[0];
-    if (!invoice) return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+    await client.query('BEGIN');
 
-    const currentPaid = parseFloat(invoice.paid_amount);
-    const total = parseFloat(invoice.total);
-    const newPaid = currentPaid + parseFloat(amount);
-    const newStatus = newPaid >= total ? 'Lunas' : 'Sebagian';
-    const paidDate = newStatus === 'Lunas' ? new Date().toISOString().split('T')[0] : null;
+    // 1. Ambil seluruh payment types untuk mapping tipe kredit
+    const ptRes = await client.query('SELECT id, name FROM payment_types');
+    const paymentTypes = ptRes.rows;
+    const ptMap = {};
+    paymentTypes.forEach(p => {
+      ptMap[p.name.toLowerCase().trim()] = p.id;
+      ptMap[p.id.toLowerCase().trim()] = p.id;
+    });
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      if (paidDate) {
-        await client.query('UPDATE sales_invoices SET paid_amount = $1, status = $2, paid_date = $3 WHERE id = $4', [newPaid, newStatus, paidDate, id]);
-      } else {
-        await client.query('UPDATE sales_invoices SET paid_amount = $1, status = $2 WHERE id = $3', [newPaid, newStatus, id]);
+    // Default credit type: prioritas Kredit 30 Hari (PT-7) atau tipe Kredit lainnya
+    const defaultCreditType = paymentTypes.find(p => p.name.toLowerCase().includes('kredit 30'))?.id
+      || paymentTypes.find(p => p.name.toLowerCase().startsWith('kredit'))?.id
+      || 'PT-7';
+
+    // 2. Ambil seluruh customer untuk validasi
+    const custRes = await client.query('SELECT id, name FROM customers');
+    const custMapByName = {};
+    const custMapById = {};
+    custRes.rows.forEach(c => {
+      custMapByName[c.name.toLowerCase().trim()] = c.id;
+      custMapById[c.id.toLowerCase().trim()] = c.id;
+    });
+
+    const seenIds = new Set();
+    const createdInvoices = [];
+
+    for (let i = 0; i < invoices.length; i++) {
+      const inv = invoices[i];
+      const rowNum = inv.row_number || (i + 1);
+
+      // A. Validasi Customer
+      const rawCust = String(inv.customer_id || inv.customer_name || inv.customer || '').trim();
+      if (!rawCust) {
+        throw new Error(`Baris ${rowNum}: Nama customer wajib diisi`);
+      }
+      const customerId = custMapById[rawCust.toLowerCase()] || custMapByName[rawCust.toLowerCase()];
+      if (!customerId) {
+        throw new Error(`Baris ${rowNum}: Customer "${rawCust}" tidak ditemukan di database`);
       }
 
-      // Log cash transaction IN
-      const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
-      const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-      const date = new Date().toISOString().split('T')[0];
-      const userId = req.user.id;
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [ctId, date, 'IN', 'Pelunasan Piutang', `Pelunasan Invoice ${id}`, amount, 'Transfer Bank', id, userId]);
+      // B. Tanggal Invoice
+      let invoiceDate = inv.date ? formatDateStr(inv.date) : todayStr;
+      if (!invoiceDate || isNaN(new Date(invoiceDate).getTime())) {
+        invoiceDate = todayStr;
+      }
 
-      await client.query('COMMIT');
-      res.json({ success: true });
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
+      // C. Validasi Total & Total Dibayar
+      const total = parseFloat(inv.total);
+      if (isNaN(total) || total <= 0) {
+        throw new Error(`Baris ${rowNum}: Total tagihan harus berupa angka lebih besar dari 0`);
+      }
+
+      const totalDibayar = parseFloat(inv.total_dibayar ?? inv.paid ?? 0);
+      if (isNaN(totalDibayar) || totalDibayar < 0) {
+        throw new Error(`Baris ${rowNum}: Total dibayar tidak boleh bernilai negatif`);
+      }
+
+      if (totalDibayar >= total) {
+        if (totalDibayar === total) {
+          throw new Error(`Baris ${rowNum}: Total dibayar sama dengan total tagihan (Rp ${Math.round(total).toLocaleString('id-ID')}). Invoice ini bukan outstanding karena sudah lunas.`);
+        } else {
+          throw new Error(`Baris ${rowNum}: Total dibayar (Rp ${Math.round(totalDibayar).toLocaleString('id-ID')}) melebihi total tagihan (Rp ${Math.round(total).toLocaleString('id-ID')}). Pembayaran tidak boleh melebihi nilai tagihan.`);
+        }
+      }
+
+      // D. Tipe Pembayaran (wajib tipe kredit)
+      let pTypeId = defaultCreditType;
+      const rawPt = String(inv.payment_type || inv.payment_type_id || '').toLowerCase().trim();
+      if (rawPt && ptMap[rawPt]) {
+        const candidatePt = paymentTypes.find(p => p.id === ptMap[rawPt]);
+        if (candidatePt && candidatePt.name.toLowerCase().startsWith('kredit')) {
+          pTypeId = candidatePt.id;
+        }
+      }
+
+      // E. Tanggal Jatuh Tempo
+      let dueDate = inv.due_date ? formatDateStr(inv.due_date) : null;
+      if (!dueDate) {
+        let tenorDays = 30;
+        if (pTypeId === 'PT-3') tenorDays = 1;
+        else if (pTypeId === 'PT-5') tenorDays = 7;
+        else if (pTypeId === 'PT-6') tenorDays = 14;
+        const dObj = new Date(invoiceDate);
+        dObj.setDate(dObj.getDate() + tenorDays);
+        dueDate = formatDateStr(dObj);
+      }
+
+      // F. Nomor Invoice (manual jika diisi, atomic counter jika kosong)
+      let invoiceId = inv.id ? String(inv.id).trim() : '';
+      if (invoiceId) {
+        if (seenIds.has(invoiceId.toLowerCase())) {
+          throw new Error(`Baris ${rowNum}: Nomor invoice "${invoiceId}" duplikat di dalam file import ini`);
+        }
+        const existingInv = await client.query('SELECT id FROM sales_invoices WHERE id = ?', [invoiceId]);
+        if (existingInv.rows.length > 0) {
+          throw new Error(`Baris ${rowNum}: Nomor invoice "${invoiceId}" sudah ada di database`);
+        }
+        seenIds.add(invoiceId.toLowerCase());
+      } else {
+        invoiceId = await generateInvoiceId(client, invoiceDate);
+        seenIds.add(invoiceId.toLowerCase());
+      }
+
+      // G. Hitung sisa tagihan & status
+      const sisa = Math.max(0, total - totalDibayar);
+      const status = totalDibayar > 0 ? 'Sebagian' : 'Belum Lunas';
+
+      // H. Simpan sales_invoices
+      await client.query(
+        `INSERT INTO sales_invoices 
+         (id, date, customer_id, subtotal, discount, tax, total, paid_amount, payment_type_id, due_date, paid_date, status, user_id) 
+         VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, NULL, ?, ?)`,
+        [invoiceId, invoiceDate, customerId, total, total, totalDibayar, pTypeId, dueDate, status, userId]
+      );
+
+      // I. Jika total_dibayar > 0, buat 1 record di sales_invoice_payments sebagai saldo awal
+      if (totalDibayar > 0) {
+        let lastPaymentDate = inv.last_payment_date || inv.tanggal_pembayaran_terakhir;
+        lastPaymentDate = lastPaymentDate ? formatDateStr(lastPaymentDate) : invoiceDate;
+        if (!lastPaymentDate || isNaN(new Date(lastPaymentDate).getTime())) {
+          lastPaymentDate = invoiceDate;
+        }
+        if (lastPaymentDate > todayStr) {
+          throw new Error(`Baris ${rowNum}: Tanggal pembayaran terakhir tidak boleh di masa depan`);
+        }
+
+        const paymentNo = await generatePaymentNo(client, lastPaymentDate);
+        await client.query(
+          `INSERT INTO sales_invoice_payments
+           (payment_no, invoice_id, payment_date, amount, payment_method, notes, is_down_payment, status, cash_transaction_id, created_by)
+           VALUES (?, ?, ?, ?, 'Saldo Awal', 'Saldo awal hasil import', 0, 'active', NULL, ?)`,
+          [paymentNo, invoiceId, lastPaymentDate, totalDibayar, userId]
+        );
+      }
+
+      createdInvoices.push({
+        id: invoiceId,
+        customer_id: customerId,
+        total,
+        total_dibayar: totalDibayar,
+        sisa,
+        status,
+        due_date: dueDate
+      });
     }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: `${createdInvoices.length} invoice outstanding berhasil diimpor`,
+      count: createdInvoices.length,
+      invoices: createdInvoices
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[Import Outstanding API] Error rollback:', err.message);
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+/**
+ * Helper to record a payment for an invoice with strict validations:
+ * - Role: admin / finance
+ * - Amount > 0, integer (bulat)
+ * - Date <= today
+ * - Row lock FOR UPDATE on sales_invoices
+ * - Dynamic balance calculation from active payments in sales_invoice_payments
+ * - Overpayment rejection (amount <= sisa)
+ * - Atomic payment_no generation: PAY-YYYY-MM-NNNNN
+ * - Cash transaction creation (type: 'IN', category: 'Pelunasan Piutang')
+ * - sales_invoice_payments insertion
+ * - sales_invoices (paid_amount, status, paid_date) update
+ */
+async function recordInvoicePayment({ invoiceId, amount, paymentDate, paymentMethod, notes, isDownPayment = 0, userId }) {
+  const numAmount = parseFloat(amount);
+  if (isNaN(numAmount) || numAmount <= 0) {
+    const err = new Error('Nominal pembayaran harus berupa angka lebih besar dari 0');
+    err.status = 400;
+    throw err;
+  }
+  if (!Number.isInteger(numAmount)) {
+    const err = new Error('Nominal pembayaran harus berupa Rupiah bulat tanpa pecahan');
+    err.status = 400;
+    throw err;
+  }
+
+  const todayStr = formatDateStr(new Date());
+  const payDate = paymentDate ? formatDateStr(paymentDate) : todayStr;
+  if (payDate > todayStr) {
+    const err = new Error('Tanggal pembayaran tidak boleh di masa depan');
+    err.status = 400;
+    throw err;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Lock invoice row
+    const invRes = await client.query('SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE', [invoiceId]);
+    if (invRes.rows.length === 0) {
+      const err = new Error('Invoice tidak ditemukan');
+      err.status = 404;
+      throw err;
+    }
+    const invoice = invRes.rows[0];
+
+    if (invoice.status === 'Batal') {
+      const err = new Error('Invoice yang sudah dibatalkan tidak dapat menerima pembayaran');
+      err.status = 400;
+      throw err;
+    }
+
+    const total = parseFloat(invoice.total || 0);
+
+    // 2. Lock & calculate active payments from sales_invoice_payments
+    const payRes = await client.query(
+      'SELECT id, amount FROM sales_invoice_payments WHERE invoice_id = ? AND status = ? FOR UPDATE',
+      [invoiceId, 'active']
+    );
+
+    let currentTotalPaid = 0;
+    if (payRes.rows.length > 0) {
+      currentTotalPaid = payRes.rows.reduce((sum, r) => sum + parseFloat(r.amount), 0);
+    } else {
+      currentTotalPaid = parseFloat(invoice.paid_amount || 0);
+    }
+
+    const sisa = Math.max(0, total - currentTotalPaid);
+
+    if (sisa <= 0) {
+      const err = new Error('Invoice ini sudah lunas, tidak ada sisa tagihan');
+      err.status = 400;
+      throw err;
+    }
+
+    if (numAmount > sisa) {
+      const err = new Error(`Pembayaran melebihi sisa tagihan! Sisa tagihan: Rp ${Math.round(sisa).toLocaleString('id-ID')}, nominal bayar: Rp ${Math.round(numAmount).toLocaleString('id-ID')}`);
+      err.status = 400;
+      throw err;
+    }
+
+    // 3. Generate atomic payment reference number: PAY-YYYY-MM-NNNNN
+    const paymentNo = await generatePaymentNo(client, payDate);
+
+    // 4. Create cash transaction
+    const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
+    const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
+    const ctCategory = 'Pelunasan Piutang';
+    const ctDesc = isDownPayment
+      ? `Uang Muka (DP) Invoice ${invoiceId} (${paymentNo})`
+      : `Pembayaran Cicilan Invoice ${invoiceId} (${paymentNo})`;
+    const methodStr = paymentMethod || 'Transfer Bank';
+
+    await client.query(
+      `INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, user_id, status)
+       VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?, 'active')`,
+      [ctId, payDate, ctCategory, ctDesc, numAmount, methodStr, invoiceId, userId]
+    );
+
+    // 5. Insert to sales_invoice_payments
+    const insertRes = await client.query(
+      `INSERT INTO sales_invoice_payments
+       (payment_no, invoice_id, payment_date, amount, payment_method, notes, is_down_payment, status, cash_transaction_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      [paymentNo, invoiceId, payDate, numAmount, methodStr, notes || null, isDownPayment ? 1 : 0, ctId, userId]
+    );
+
+    // 6. Recalculate totals and update invoice
+    const newTotalPaid = currentTotalPaid + numAmount;
+    const newSisa = Math.max(0, total - newTotalPaid);
+    const newStatus = newSisa <= 0 ? 'Lunas' : 'Sebagian';
+    const newPaidDate = newStatus === 'Lunas' ? payDate : null;
+
+    await client.query(
+      'UPDATE sales_invoices SET paid_amount = ?, status = ?, paid_date = ? WHERE id = ?',
+      [newTotalPaid, newStatus, newPaidDate, invoiceId]
+    );
+
+    await client.query('COMMIT');
+
+    return {
+      payment: {
+        id: insertRes.insertId,
+        payment_no: paymentNo,
+        invoice_id: invoiceId,
+        payment_date: payDate,
+        amount: numAmount,
+        payment_method: methodStr,
+        notes: notes || null,
+        is_down_payment: Boolean(isDownPayment),
+        cash_transaction_id: ctId
+      },
+      invoice: {
+        id: invoiceId,
+        total: total,
+        paid_amount: newTotalPaid,
+        sisa: newSisa,
+        status: newStatus,
+        paid_date: newPaidDate
+      }
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+app.get('/api/finance/receivables', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+  try {
+    const { page, limit: limitQ, q, search, customer_id, status, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+    const todayStr = formatDateStr(new Date());
+
+    const whereConditions = ["si.status != 'Batal'"];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(si.id LIKE ? OR c.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern);
+    }
+
+    if (customer_id && customer_id !== 'all') {
+      whereConditions.push('si.customer_id = ?');
+      params.push(customer_id);
+    }
+
+    if (status && status !== 'all') {
+      const qStatus = status.toLowerCase();
+      if (qStatus === 'overdue') {
+        whereConditions.push('(si.total - si.paid_amount) > 0 AND si.due_date IS NOT NULL AND si.due_date < CURDATE()');
+      } else if (qStatus.includes('belum')) {
+        whereConditions.push('LOWER(si.status) LIKE ?');
+        params.push('%belum%');
+      } else if (qStatus === 'sebagian') {
+        whereConditions.push('LOWER(si.status) = ?');
+        params.push('sebagian');
+      } else if (qStatus === 'lunas') {
+        whereConditions.push('LOWER(si.status) = ?');
+        params.push('lunas');
+      }
+    } else {
+      whereConditions.push("si.status NOT IN ('Lunas', 'Batal')");
+    }
+
+    const whereClause = 'WHERE ' + whereConditions.join(' AND ');
+
+    // Summary query must be calculated from ALL active piutang data according to filters
+    const summaryWhereConditions = ["si.status NOT IN ('Lunas', 'Batal')"];
+    const summaryParams = [];
+    if (searchQuery) {
+      summaryWhereConditions.push('(si.id LIKE ? OR c.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      summaryParams.push(pattern, pattern);
+    }
+    if (customer_id && customer_id !== 'all') {
+      summaryWhereConditions.push('si.customer_id = ?');
+      summaryParams.push(customer_id);
+    }
+    const summaryWhereClause = 'WHERE ' + summaryWhereConditions.join(' AND ');
+
+    const mapReceivableRow = (r) => {
+      const total = parseFloat(r.total || 0);
+      const paid = parseFloat(r.paid_amount || 0);
+      const sisa = Math.max(0, total - paid);
+      const dueDateStr = formatDateStr(r.due_date);
+      const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
+
+      return {
+        id: r.id,
+        date: formatDateStr(r.date),
+        dueDate: dueDateStr,
+        customerId: r.customer_id,
+        customer: r.customer_name || 'Tanpa Pelanggan',
+        customerPhone: r.customer_phone || '-',
+        total: total,
+        paid: paid,
+        sisa: sisa,
+        type: r.payment_type_name || 'Kredit',
+        status: r.status,
+        isOverdue: isOverdue,
+        paidDate: formatDateStr(r.paid_date) || null
+      };
+    };
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      // Summary query
+      const summarySql = `
+        SELECT 
+          COALESCE(SUM(si.total - si.paid_amount), 0) AS total_piutang,
+          COALESCE(SUM(CASE WHEN LOWER(si.status) LIKE '%belum%' THEN si.total ELSE 0 END), 0) AS belum_bayar,
+          COALESCE(SUM(CASE WHEN LOWER(si.status) = 'sebagian' THEN si.total - si.paid_amount ELSE 0 END), 0) AS sebagian
+        FROM sales_invoices si
+        LEFT JOIN customers c ON si.customer_id = c.id
+        ${summaryWhereClause}
+      `;
+      const summaryRes = await pool.query(summarySql, summaryParams);
+      const sumRow = summaryRes.rows[0] || {};
+
+      // Count query for list
+      const countSql = `
+        SELECT COUNT(*) AS total 
+        FROM sales_invoices si 
+        LEFT JOIN customers c ON si.customer_id = c.id 
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      // Data query
+      const dataSql = `
+        SELECT si.*, c.name as customer_name, c.phone as customer_phone, pt.name as payment_type_name
+        FROM sales_invoices si
+        LEFT JOIN customers c ON si.customer_id = c.id
+        LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+        ${whereClause}
+        ORDER BY si.due_date ASC, si.date DESC, si.id DESC
+        LIMIT ? OFFSET ?
+      `;
+      const result = await pool.query(dataSql, [...params, limitNum, offset]);
+
+      return res.json({
+        data: result.rows.map(mapReceivableRow),
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        },
+        summary: {
+          totalPiutang: parseFloat(sumRow.total_piutang || 0),
+          belumBayar: parseFloat(sumRow.belum_bayar || 0),
+          sebagian: parseFloat(sumRow.sebagian || 0),
+          total_piutang: parseFloat(sumRow.total_piutang || 0),
+          belum_bayar: parseFloat(sumRow.belum_bayar || 0)
+        }
+      });
+    }
+
+    const result = await pool.query(`
+      SELECT si.*, c.name as customer_name, c.phone as customer_phone, pt.name as payment_type_name
+      FROM sales_invoices si
+      LEFT JOIN customers c ON si.customer_id = c.id
+      LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+      ${whereClause}
+      ORDER BY si.due_date ASC, si.date DESC, si.id DESC
+    `, params);
+    res.json(result.rows.map(mapReceivableRow));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.post('/api/invoices/:id/payments', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+  try {
+    const result = await recordInvoicePayment({
+      invoiceId: req.params.id,
+      amount: req.body.amount,
+      paymentDate: req.body.date || req.body.payment_date,
+      paymentMethod: req.body.method || req.body.payment_method || 'Transfer Bank',
+      notes: req.body.notes,
+      isDownPayment: 0,
+      userId: req.user.id
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const statusCode = err.status || 500;
+    res.status(statusCode).json({ error: err.message });
+  }
+});
+
+// Backward-compatible endpoint for existing UI and tests
+app.post('/api/finance/receivables/:id/pay', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+  try {
+    const result = await recordInvoicePayment({
+      invoiceId: req.params.id,
+      amount: req.body.amount,
+      paymentDate: req.body.date || req.body.payment_date,
+      paymentMethod: req.body.payment_type_id || req.body.method || req.body.payment_method || 'Transfer Bank',
+      notes: req.body.notes,
+      isDownPayment: 0,
+      userId: req.user.id
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const statusCode = err.status || 500;
+    res.status(statusCode).json({ error: err.message });
+  }
+});
+
+app.get('/api/invoices/:id/payments', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const invRes = await pool.query(`
+      SELECT si.*, c.name as customer_name, pt.name as payment_type_name
+      FROM sales_invoices si
+      LEFT JOIN customers c ON si.customer_id = c.id
+      LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+      WHERE si.id = $1
+    `, [id]);
+
+    if (invRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+    }
+    const inv = invRes.rows[0];
+
+    const payRes = await pool.query(`
+      SELECT sip.*, u.name as created_by_name, vu.name as void_by_name
+      FROM sales_invoice_payments sip
+      LEFT JOIN users u ON sip.created_by = u.id
+      LEFT JOIN users vu ON sip.void_by = vu.id
+      WHERE sip.invoice_id = $1
+      ORDER BY sip.id ASC
+    `, [id]);
+
+    const todayStr = formatDateStr(new Date());
+    const total = parseFloat(inv.total || 0);
+    const activePayments = payRes.rows.filter(p => p.status === 'active');
+    const totalPaidFromPayments = activePayments.reduce((s, p) => s + parseFloat(p.amount), 0);
+    const totalPaid = payRes.rows.length > 0 ? totalPaidFromPayments : parseFloat(inv.paid_amount || 0);
+    const sisa = Math.max(0, total - totalPaid);
+    const dueDateStr = formatDateStr(inv.due_date);
+    const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
+
+    res.json({
+      invoice: {
+        id: inv.id,
+        date: formatDateStr(inv.date),
+        dueDate: dueDateStr,
+        customer: inv.customer_name || 'Tanpa Pelanggan',
+        type: inv.payment_type_name || 'Kredit',
+        total: total,
+        paid: totalPaid,
+        sisa: sisa,
+        status: inv.status,
+        isOverdue: isOverdue,
+        paidDate: formatDateStr(inv.paid_date) || null
+      },
+      payments: payRes.rows.map(p => ({
+        id: p.id,
+        paymentNo: p.payment_no,
+        date: formatDateStr(p.payment_date),
+        amount: parseFloat(p.amount),
+        method: p.payment_method,
+        notes: p.notes || '',
+        isDownPayment: Boolean(p.is_down_payment),
+        status: p.status,
+        voidReason: p.void_reason || null,
+        voidBy: p.void_by_name || null,
+        voidAt: p.void_at ? (typeof p.void_at === 'string' ? p.void_at : p.void_at.toISOString()) : null,
+        createdBy: p.created_by_name || 'Staff'
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Void Payment Endpoint (supports /api/invoices/payments/:paymentId/void and /api/invoices/:id/payments/:paymentId/void)
+const handleVoidPayment = async (req, res) => {
+  const paymentId = req.params.paymentId;
+  const reason = (req.body.reason || req.body.void_reason || '').trim();
+
+  if (!reason) {
+    return res.status(400).json({ error: 'Alasan pembatalan (void) wajib diisi' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Find and lock the payment record
+    const isNum = !isNaN(parseInt(paymentId, 10)) && /^\d+$/.test(paymentId);
+    let payQuery = 'SELECT * FROM sales_invoice_payments WHERE ';
+    const payParams = isNum ? [parseInt(paymentId, 10)] : [paymentId];
+    payQuery += isNum ? 'id = ? FOR UPDATE' : 'payment_no = ? FOR UPDATE';
+
+    const payRes = await client.query(payQuery, payParams);
+    if (payRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Data pembayaran tidak ditemukan' });
+    }
+    const payment = payRes.rows[0];
+
+    if (payment.status === 'void') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Pembayaran ini sudah dibatalkan (void) sebelumnya' });
+    }
+
+    const invoiceId = payment.invoice_id;
+
+    // 2. Lock the associated invoice
+    const invRes = await client.query('SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE', [invoiceId]);
+    if (invRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Invoice terkait tidak ditemukan' });
+    }
+    const invoice = invRes.rows[0];
+
+    // 3. Mark payment as void
+    await client.query(
+      `UPDATE sales_invoice_payments 
+       SET status = 'void', void_reason = ?, void_by = ?, void_at = NOW() 
+       WHERE id = ?`,
+      [reason, req.user.id, payment.id]
+    );
+
+    // 4. Reversal cash transaction (mark status as 'cancelled')
+    if (payment.cash_transaction_id) {
+      await client.query(
+        `UPDATE cash_transactions 
+         SET status = 'cancelled' 
+         WHERE id = ?`,
+        [payment.cash_transaction_id]
+      );
+    }
+
+    // 5. Recalculate invoice totals from all remaining active payments
+    const activePayRes = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) as total_active, MAX(payment_date) as last_date, COUNT(*) as count 
+       FROM sales_invoice_payments 
+       WHERE invoice_id = ? AND status = 'active'`,
+      [invoiceId]
+    );
+    const totalActivePaid = parseFloat(activePayRes.rows[0].total_active || 0);
+    const invoiceTotal = parseFloat(invoice.total || 0);
+    const newSisa = Math.max(0, invoiceTotal - totalActivePaid);
+    const newStatus = newSisa <= 0 ? 'Lunas' : (totalActivePaid > 0 ? 'Sebagian' : 'Belum Lunas');
+    const newPaidDate = newStatus === 'Lunas' ? activePayRes.rows[0].last_date : null;
+
+    await client.query(
+      `UPDATE sales_invoices 
+       SET paid_amount = ?, status = ?, paid_date = ? 
+       WHERE id = ?`,
+      [totalActivePaid, newStatus, newPaidDate, invoiceId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: 'Pembayaran berhasil dibatalkan (void)',
+      payment: {
+        id: payment.id,
+        payment_no: payment.payment_no,
+        invoice_id: invoiceId,
+        amount: parseFloat(payment.amount),
+        status: 'void',
+        void_reason: reason,
+        void_by: req.user.id
+      },
+      invoice: {
+        id: invoiceId,
+        total: invoiceTotal,
+        paid_amount: totalActivePaid,
+        sisa: newSisa,
+        status: newStatus,
+        paid_date: newPaidDate ? formatDateStr(newPaidDate) : null
+      }
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[Void Payment Error]:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+app.post('/api/invoices/payments/:paymentId/void', authenticateToken, authorizeRoles('admin', 'finance'), handleVoidPayment);
+app.post('/api/invoices/:id/payments/:paymentId/void', authenticateToken, authorizeRoles('admin', 'finance'), handleVoidPayment);
 
 // --- Cash Flow Route ---
 // Auto-migrate: add 'status' column if not exists
@@ -1457,16 +2994,74 @@ pool.query(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS status VARCHA
     await pool.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS nib VARCHAR(30) NULL`);
     await pool.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS email VARCHAR(255) NULL`);
     await pool.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS no_hp_2 VARCHAR(30) NULL`);
-    console.log('[Migration] customers: ktp, npwp, npwp_name, npwp_address, nib, email, no_hp_2 columns ensured');
+    // Auto-migrasi tabel pembayaran cicilan invoice & counter
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS payment_counters (
+        year INT NOT NULL PRIMARY KEY,
+        last_number INT NOT NULL DEFAULT 0
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sales_invoice_payments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        payment_no VARCHAR(50) UNIQUE NOT NULL,
+        invoice_id VARCHAR(255) NOT NULL,
+        payment_date DATE NOT NULL,
+        amount DECIMAL(20,4) NOT NULL,
+        payment_method VARCHAR(50) NOT NULL,
+        notes TEXT DEFAULT NULL,
+        is_down_payment TINYINT(1) DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'active',
+        void_reason TEXT DEFAULT NULL,
+        void_by INT DEFAULT NULL,
+        void_at DATETIME DEFAULT NULL,
+        cash_transaction_id VARCHAR(255) DEFAULT NULL,
+        created_by INT DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_invoice_id (invoice_id),
+        INDEX idx_payment_date (payment_date),
+        INDEX idx_status (status),
+        FOREIGN KEY (invoice_id) REFERENCES sales_invoices(id) ON DELETE RESTRICT,
+        FOREIGN KEY (void_by) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (cash_transaction_id) REFERENCES cash_transactions(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+    await pool.query("INSERT IGNORE INTO settings (`key`, value) VALUES ('prefix_payment', 'PAY-{YYYY}-{MM}-')");
+    console.log('[Migration] sales_invoice_payments & payment_counters tables ensured');
   } catch (err) {
     console.error('[Migration] Failed to execute migrations:', err.message);
   }
 })();
 
-app.get('/api/finance/cash-flow', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+app.get(['/api/finance/cash-flow', '/api/finance/cashflow'], authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM cash_transactions ORDER BY date DESC, id DESC');
-    res.json(result.rows.map(r => ({
+    const { page, limit: limitQ, type, category, search, q, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = [];
+    const params = [];
+
+    if (type && type !== 'all') {
+      whereConditions.push('UPPER(ct.type) = ?');
+      params.push(type.toUpperCase());
+    }
+
+    if (category && category !== 'all') {
+      whereConditions.push('ct.category = ?');
+      params.push(category);
+    }
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(ct.description LIKE ? OR ct.category LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const mapCashRow = (r) => ({
       id: r.id,
       date: formatDateStr(r.date),
       type: r.type,
@@ -1477,8 +3072,77 @@ app.get('/api/finance/cash-flow', authenticateToken, authorizeRoles('admin', 'fi
       invoiceId: r.invoice_id || '',
       purchaseOrderId: r.purchase_order_id || '',
       status: r.status || 'active',
-      isManual: !r.invoice_id && !r.purchase_order_id
-    })));
+      isManual: !r.invoice_id && !r.purchase_order_id,
+      runningBalance: parseFloat(r.running_balance || 0),
+      running_balance: parseFloat(r.running_balance || 0)
+    });
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      // Header summary calculated from ALL active transactions matching filter
+      const summarySql = `
+        SELECT 
+          COALESCE(SUM(CASE WHEN ct.type = 'IN' AND (ct.status IS NULL OR ct.status = 'active') THEN ct.amount ELSE 0 END), 0) AS total_in,
+          COALESCE(SUM(CASE WHEN ct.type = 'OUT' AND (ct.status IS NULL OR ct.status = 'active') THEN ct.amount ELSE 0 END), 0) AS total_out
+        FROM cash_transactions ct
+        ${whereClause}
+      `;
+      const summaryRes = await pool.query(summarySql, params);
+      const sumRow = summaryRes.rows[0] || {};
+      const totalIn = parseFloat(sumRow.total_in || 0);
+      const totalOut = parseFloat(sumRow.total_out || 0);
+      const net = totalIn - totalOut;
+
+      const countSql = `SELECT COUNT(*) AS total FROM cash_transactions ct ${whereClause}`;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      // Running balance using MariaDB Window Function
+      const dataSql = `
+        SELECT * FROM (
+          SELECT 
+            ct.*,
+            SUM(
+              CASE 
+                WHEN (ct.status IS NULL OR ct.status = 'active') 
+                THEN (CASE WHEN ct.type = 'IN' THEN ct.amount ELSE -ct.amount END) 
+                ELSE 0 
+              END
+            ) OVER (ORDER BY ct.date ASC, ct.id ASC) AS running_balance
+          FROM cash_transactions ct
+        ) t
+        ${whereClause.replace(/\bct\./g, 't.')}
+        ORDER BY t.date DESC, t.id DESC
+        LIMIT ? OFFSET ?
+      `;
+      const result = await pool.query(dataSql, [...params, limitNum, offset]);
+
+      return res.json({
+        data: result.rows.map(mapCashRow),
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        },
+        summary: {
+          totalIn,
+          totalOut,
+          net
+        }
+      });
+    }
+
+    // Unpaginated fallback
+    const result = await pool.query(`
+      SELECT * FROM cash_transactions ct
+      ${whereClause}
+      ORDER BY ct.date DESC, ct.id DESC
+    `, params);
+    return res.json(result.rows.map(mapCashRow));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1549,13 +3213,22 @@ app.patch('/api/finance/cash-flow/:id/cancel', authenticateToken, authorizeRoles
 
     // Reversal untuk transaksi otomatis
     if (tx.invoice_id) {
-      // Reversal invoice paid_amount
+      // Void corresponding sales_invoice_payments row if exists
+      await client.query(
+        `UPDATE sales_invoice_payments 
+         SET status = 'void', void_reason = 'Dibatalkan melalui modul Arus Kas', void_by = ?, void_at = NOW() 
+         WHERE cash_transaction_id = ? AND status = 'active'`,
+        [req.user.id, id]
+      );
+
+      // Reversal invoice paid_amount & status
       const invRes = await client.query('SELECT * FROM sales_invoices WHERE id=$1', [tx.invoice_id]);
       if (invRes.rows.length > 0) {
         const inv = invRes.rows[0];
         const newPaid = Math.max(0, parseFloat(inv.paid_amount) - parseFloat(tx.amount));
-        const newStatus = newPaid >= parseFloat(inv.total) ? 'Lunas' : newPaid > 0 ? 'Sebagian' : 'Belum Bayar';
-        await client.query('UPDATE sales_invoices SET paid_amount=$1, status=$2 WHERE id=$3', [newPaid, newStatus, tx.invoice_id]);
+        const newStatus = newPaid >= parseFloat(inv.total) ? 'Lunas' : newPaid > 0 ? 'Sebagian' : 'Belum Lunas';
+        const newPaidDate = newStatus === 'Lunas' ? inv.paid_date : null;
+        await client.query('UPDATE sales_invoices SET paid_amount=$1, status=$2, paid_date=$3 WHERE id=$4', [newPaid, newStatus, newPaidDate, tx.invoice_id]);
       }
     } else if (tx.purchase_order_id) {
       // Reversal PO paid_amount
@@ -2005,8 +3678,124 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
 
 app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
   try {
-    const result = await pool.query('SELECT po.*, v.name as vendor_name, pt.name as payment_type_name FROM purchase_orders po LEFT JOIN vendors v ON po.vendor_id = v.id LEFT JOIN payment_types pt ON po.payment_type_id = pt.id WHERE po.status != $1 AND po.status != $2', ['Selesai', 'Batal']);
-    res.json(result.rows);
+    const { page, limit: limitQ, q, search, vendor_id, status, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = ["po.status != 'Batal'"];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(po.id LIKE ? OR v.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern);
+    }
+
+    if (vendor_id && vendor_id !== 'all') {
+      whereConditions.push('po.vendor_id = ?');
+      params.push(vendor_id);
+    }
+
+    if (status && status !== 'all') {
+      const qStatus = status.toLowerCase();
+      if (qStatus === 'lunas') {
+        whereConditions.push('po.paid_amount >= po.total');
+      } else if (qStatus.includes('belum')) {
+        whereConditions.push('po.paid_amount = 0');
+      } else if (qStatus === 'sebagian') {
+        whereConditions.push('po.paid_amount > 0 AND po.paid_amount < po.total');
+      }
+    }
+
+    const whereClause = 'WHERE ' + whereConditions.join(' AND ');
+
+    const mapPayableRow = (r) => {
+      const total = parseFloat(r.total || 0);
+      const paid = parseFloat(r.paid_amount || 0);
+      const sisa = Math.max(0, total - paid);
+      return {
+        id: r.id,
+        date: formatDateStr(r.date),
+        dueDate: formatDateStr(r.due_date) || formatDateStr(r.date) || '-',
+        paidDate: formatDateStr(r.paid_date) || null,
+        vendorId: r.vendor_id,
+        vendor: r.vendor_name || 'Tanpa Vendor',
+        total: total,
+        paid: paid,
+        sisa: sisa,
+        type: r.payment_type_name || 'Tunai',
+        status: sisa > 0 ? 'Belum Lunas' : 'Lunas'
+      };
+    };
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      // Summary query over all vendors & debts
+      const summarySql = `
+        SELECT 
+          COALESCE(SUM(GREATEST(po.total - po.paid_amount, 0)), 0) AS total_debt,
+          COUNT(DISTINCT CASE WHEN (po.total - po.paid_amount) > 0 THEN po.vendor_id END) AS vendors_with_debt,
+          (SELECT COUNT(*) FROM vendors) AS total_vendors
+        FROM purchase_orders po
+        WHERE po.status != 'Batal'
+      `;
+      const summaryRes = await pool.query(summarySql);
+      const sumRow = summaryRes.rows[0] || {};
+      const totalVendors = parseInt(sumRow.total_vendors || 0);
+      const vendorsWithDebt = parseInt(sumRow.vendors_with_debt || 0);
+      const vendorsLunas = Math.max(0, totalVendors - vendorsWithDebt);
+
+      const countSql = `
+        SELECT COUNT(*) AS total 
+        FROM purchase_orders po 
+        LEFT JOIN vendors v ON po.vendor_id = v.id 
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      const dataSql = `
+        SELECT po.*, v.name as vendor_name, pt.name as payment_type_name
+        FROM purchase_orders po
+        LEFT JOIN vendors v ON po.vendor_id = v.id
+        LEFT JOIN payment_types pt ON po.payment_type_id = pt.id
+        ${whereClause}
+        ORDER BY po.due_date ASC, po.date DESC, po.id DESC
+        LIMIT ? OFFSET ?
+      `;
+      const result = await pool.query(dataSql, [...params, limitNum, offset]);
+
+      return res.json({
+        data: result.rows.map(mapPayableRow),
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        },
+        summary: {
+          totalDebt: parseFloat(sumRow.total_debt || 0),
+          vendorsWithDebt,
+          vendorsLunas,
+          total_debt: parseFloat(sumRow.total_debt || 0),
+          vendors_with_debt: vendorsWithDebt,
+          vendors_lunas: vendorsLunas
+        }
+      });
+    }
+
+    const result = await pool.query(`
+      SELECT po.*, v.name as vendor_name, pt.name as payment_type_name 
+      FROM purchase_orders po 
+      LEFT JOIN vendors v ON po.vendor_id = v.id 
+      LEFT JOIN payment_types pt ON po.payment_type_id = pt.id 
+      ${whereClause}
+      ORDER BY po.due_date ASC, po.date DESC, po.id DESC
+    `, params);
+    res.json(result.rows.map(mapPayableRow));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2111,14 +3900,41 @@ app.delete('/api/vendors/:id', authenticateToken, authorizeRoles('admin', 'gudan
 // --- Purchase Orders Routes ---
 app.get('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang', 'finance'), async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT po.*, v.name as vendor_name, pt.name as payment_type 
-      FROM purchase_orders po 
-      LEFT JOIN vendors v ON po.vendor_id = v.id
-      LEFT JOIN payment_types pt ON po.payment_type_id = pt.id
-      ORDER BY po.date DESC, po.id DESC
-    `);
-    res.json(result.rows.map(row => ({
+    const { page, limit: limitQ, q, search, status, vendor_id, date_from, date_to, paginate, all } = req.query;
+    const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(po.id LIKE ? OR v.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern);
+    }
+
+    if (status && status !== 'all') {
+      whereConditions.push('LOWER(po.status) = ?');
+      params.push(status.toLowerCase());
+    }
+
+    if (vendor_id && vendor_id !== 'all') {
+      whereConditions.push('po.vendor_id = ?');
+      params.push(vendor_id);
+    }
+
+    if (date_from) {
+      whereConditions.push('po.date >= ?');
+      params.push(date_from);
+    }
+    if (date_to) {
+      whereConditions.push('po.date <= ?');
+      params.push(date_to);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const mapPurchaseRow = (row) => ({
       id: row.id,
       date: formatDateStr(row.date),
       vendorId: row.vendor_id,
@@ -2130,7 +3946,53 @@ app.get('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang', '
       status: row.status,
       paymentTypeId: row.payment_type_id,
       dueDate: formatDateStr(row.due_date)
-    })));
+    });
+
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+      const offset = (pageNum - 1) * limitNum;
+
+      const countSql = `
+        SELECT COUNT(*) AS total 
+        FROM purchase_orders po 
+        LEFT JOIN vendors v ON po.vendor_id = v.id 
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countSql, params);
+      const total = parseInt(countRes.rows[0]?.total || 0);
+
+      const dataSql = `
+        SELECT po.*, v.name as vendor_name, pt.name as payment_type 
+        FROM purchase_orders po 
+        LEFT JOIN vendors v ON po.vendor_id = v.id
+        LEFT JOIN payment_types pt ON po.payment_type_id = pt.id
+        ${whereClause}
+        ORDER BY po.date DESC, po.id DESC
+        LIMIT ? OFFSET ?
+      `;
+      const result = await pool.query(dataSql, [...params, limitNum, offset]);
+
+      return res.json({
+        data: result.rows.map(mapPurchaseRow),
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        }
+      });
+    }
+
+    const result = await pool.query(`
+      SELECT po.*, v.name as vendor_name, pt.name as payment_type 
+      FROM purchase_orders po 
+      LEFT JOIN vendors v ON po.vendor_id = v.id
+      LEFT JOIN payment_types pt ON po.payment_type_id = pt.id
+      ${whereClause}
+      ORDER BY po.date DESC, po.id DESC
+    `, params);
+    res.json(result.rows.map(mapPurchaseRow));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2207,7 +4069,7 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
   }
 });
 
-app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang', 'finance'), async (req, res) => {
   const poId = req.params.id;
   const { vendor_id, vendorId, date, paid, paid_amount, payment_type_id, due_date, items, discount, diskon } = req.body;
   const vId = vendor_id || vendorId;
@@ -2334,6 +4196,18 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
   try {
     await client.query('BEGIN');
 
+    // Lock the invoice row
+    const invCheck = await client.query('SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE', [invId]);
+    if (invCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+    }
+    const currentInv = invCheck.rows[0];
+    if (currentInv.status === 'Batal') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Invoice yang sudah dibatalkan tidak dapat diedit' });
+    }
+
     // 1. Recalculate subtotal, tax, and finalTotal from items
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
@@ -2353,14 +4227,44 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
     const taxAmount = ppnEnabled ? Math.round((subtotal - finalDiskon) * (pajakDefault / 100)) : 0;
     const finalTotal = subtotal - finalDiskon + taxAmount;
 
-    // 2. Determine status based on payment type
-    const instant = await isInstantPayment(pType);
-    const finalPaid = parseFloat(paid || paid_amount || 0);
-    const effectivePaid = instant ? finalTotal : finalPaid;
-    const status = instant ? 'Lunas'
-      : (effectivePaid >= finalTotal ? 'Lunas'
-        : (effectivePaid > 0 ? 'Sebagian' : 'Belum Bayar'));
+    // 2. Check active payments in sales_invoice_payments
+    const activePayRes = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) as total_active, COUNT(*) as count 
+       FROM sales_invoice_payments 
+       WHERE invoice_id = ? AND status = 'active'`,
+      [invId]
+    );
+    const totalActivePaid = parseFloat(activePayRes.rows[0].total_active || 0);
+    const activePaymentCount = parseInt(activePayRes.rows[0].count || 0);
 
+    // Rule: Edit yang membuat total invoice lebih kecil dari total pembayaran aktif ditolak dengan pesan jelas
+    if (totalActivePaid > 0 && finalTotal < totalActivePaid) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `Total invoice baru (Rp ${Math.round(finalTotal).toLocaleString('id-ID')}) tidak boleh lebih kecil dari total pembayaran aktif yang sudah diterima (Rp ${Math.round(totalActivePaid).toLocaleString('id-ID')}).`
+      });
+    }
+
+    // 3. Determine status & effective paid
+    const instant = await isInstantPayment(pType);
+    let effectivePaid = 0;
+    let status = 'Belum Lunas';
+
+    if (activePaymentCount > 0) {
+      effectivePaid = totalActivePaid;
+      const sisa = Math.max(0, finalTotal - totalActivePaid);
+      status = sisa <= 0 ? 'Lunas' : (totalActivePaid > 0 ? 'Sebagian' : 'Belum Lunas');
+    } else {
+      const finalPaid = parseFloat(paid || paid_amount || 0);
+      effectivePaid = instant ? finalTotal : finalPaid;
+      status = instant ? 'Lunas'
+        : (effectivePaid >= finalTotal ? 'Lunas'
+          : (effectivePaid > 0 ? 'Sebagian' : 'Belum Lunas'));
+    }
+
+    const paidDate = status === 'Lunas' ? (currentInv.paid_date || invDate) : null;
+
+    // 4. Stock adjustment
     const oldItemsRes = await client.query('SELECT product_id, quantity FROM invoice_items WHERE invoice_id = ?', [invId]);
     for (const item of oldItemsRes.rows) {
       await client.query('UPDATE products SET stock = stock + ? WHERE id = ?', [item.quantity, item.product_id]);
@@ -2392,20 +4296,27 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
     }
 
     if (due_date !== undefined) {
-      await client.query('UPDATE sales_invoices SET date = ?, customer_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ? WHERE id = ?', [invDate, custId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, due_date, invId]);
+      await client.query('UPDATE sales_invoices SET date = ?, customer_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ?, paid_date = ? WHERE id = ?', [invDate, custId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, due_date, paidDate, invId]);
     } else {
-      await client.query('UPDATE sales_invoices SET date = ?, customer_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ? WHERE id = ?', [invDate, custId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, invId]);
+      await client.query('UPDATE sales_invoices SET date = ?, customer_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, paid_date = ? WHERE id = ?', [invDate, custId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, paidDate, invId]);
     }
 
-    await client.query('DELETE FROM cash_transactions WHERE invoice_id = ? AND invoice_id IS NOT NULL AND (status IS NULL OR status = \'active\')', [invId]);
-    if (effectivePaid > 0) {
-      const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
-      const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
-      const methodEdit = ptNameRes.rows[0]?.name || 'Transfer Bank';
-      const userId = req.user.id;
-      const cashCategory = status === 'Lunas' ? 'Penjualan' : 'Pelunasan Piutang';
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, invDate, 'IN', cashCategory, `Pembayaran INV ${invId} (Edit)`, effectivePaid, methodEdit, invId, pType, userId]);
+    // Cash transactions handling:
+    // If invoice has active payments in sales_invoice_payments, PRESERVE their cash transactions!
+    if (activePaymentCount > 0) {
+      // Do not touch active payment cash transactions
+    } else {
+      // For instant / non-installment invoices, delete and re-insert
+      await client.query('DELETE FROM cash_transactions WHERE invoice_id = ? AND invoice_id IS NOT NULL AND (status IS NULL OR status = \'active\')', [invId]);
+      if (effectivePaid > 0) {
+        const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
+        const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
+        const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
+        const methodEdit = ptNameRes.rows[0]?.name || 'Transfer Bank';
+        const userId = req.user.id;
+        const cashCategory = status === 'Lunas' ? 'Penjualan' : 'Pelunasan Piutang';
+        await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, invoice_id, payment_type_id, user_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, invDate, 'IN', cashCategory, `Pembayaran INV ${invId} (Edit)`, effectivePaid, methodEdit, invId, pType, userId, 'active']);
+      }
     }
 
     await client.query('COMMIT');
@@ -2424,7 +4335,7 @@ app.put('/api/invoices/:id/cancel', authenticateToken, authorizeRoles('admin', '
   try {
     await client.query('BEGIN');
 
-    const checkRes = await client.query('SELECT status FROM sales_invoices WHERE id = $1', [invId]);
+    const checkRes = await client.query('SELECT * FROM sales_invoices WHERE id = $1 FOR UPDATE', [invId]);
     if (checkRes.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Invoice tidak ditemukan' });
@@ -2434,13 +4345,30 @@ app.put('/api/invoices/:id/cancel', authenticateToken, authorizeRoles('admin', '
       return res.json({ success: true });
     }
 
+    // 1. Restore product stock
     const itemsRes = await client.query('SELECT product_id, quantity FROM invoice_items WHERE invoice_id = $1', [invId]);
     for (const item of itemsRes.rows) {
       await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [item.quantity, item.product_id]);
     }
 
-    await client.query('UPDATE sales_invoices SET status = $1 WHERE id = $2', ['Batal', invId]);
-    await client.query('DELETE FROM cash_transactions WHERE invoice_id = $1', [invId]);
+    // 2. Automatically void all active payments for this invoice
+    await client.query(
+      `UPDATE sales_invoice_payments 
+       SET status = 'void', void_reason = 'Invoice dibatalkan', void_by = ?, void_at = NOW() 
+       WHERE invoice_id = ? AND status = 'active'`,
+      [req.user.id, invId]
+    );
+
+    // 3. Reversal all active cash transactions related to this invoice (mark status as 'cancelled')
+    await client.query(
+      `UPDATE cash_transactions 
+       SET status = 'cancelled' 
+       WHERE invoice_id = ? AND (status IS NULL OR status = 'active')`,
+      [invId]
+    );
+
+    // 4. Update sales_invoices status to 'Batal'
+    await client.query('UPDATE sales_invoices SET status = $1, paid_amount = 0, paid_date = NULL WHERE id = $2', ['Batal', invId]);
 
     await client.query('COMMIT');
     res.json({ success: true });
@@ -2453,22 +4381,7 @@ app.put('/api/invoices/:id/cancel', authenticateToken, authorizeRoles('admin', '
 });
 
 // --- Cash Transactions (Arus Kas) ---
-app.get('/api/finance/cashflow', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM cash_transactions ORDER BY date DESC, id DESC');
-    res.json(result.rows.map(r => ({
-      id: r.id,
-      date: formatDateStr(r.date),
-      type: r.type,
-      category: r.category,
-      desc: r.description,
-      amount: parseFloat(r.amount),
-      method: r.method
-    })));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+
 
 app.post('/api/finance/cashflow', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
   const { type, category, description, amount, method, date } = req.body;
@@ -2682,7 +4595,7 @@ app.get('/login', (req, res) => {
 // One-time setup function that runs on server start to seed superadmin
 (async () => {
   try {
-    const bcrypt = require('bcrypt');
+    const bcrypt = require('bcryptjs');
     const newAdminPassword = 'Admin@2026';
     const hashedPassword = await bcrypt.hash(newAdminPassword, 10);
     
@@ -2981,6 +4894,16 @@ setInterval(() => {
 setTimeout(() => {
   runDailyReconciliation();
 }, 10000);
+
+// Handle PayloadTooLargeError — return JSON instead of HTML 413 page
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({
+      error: 'Payload terlalu besar. Maksimal 10MB per request. Bagi file import menjadi beberapa batch yang lebih kecil.'
+    });
+  }
+  next(err);
+});
 
 // Bind ke 0.0.0.0 agar bisa diakses dari luar (wajib di hosting)
 app.listen(port, '0.0.0.0', () => {
