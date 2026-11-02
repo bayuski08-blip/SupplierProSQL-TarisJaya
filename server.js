@@ -4592,8 +4592,6 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
   const { customer_id, customerId, date, paid, paid_amount, payment_type_id, due_date, items, discount, diskon } = req.body;
   const custId = customer_id || customerId;
   const pType = payment_type_id || 'PT-1';
-  const invDate = date || new Date().toISOString().split('T')[0];
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -4605,6 +4603,8 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir')
       return res.status(404).json({ error: 'Invoice tidak ditemukan' });
     }
     const currentInv = invCheck.rows[0];
+    // Use date from request body if provided; otherwise keep existing invoice date (never overwrite with today)
+    const invDate = (date && String(date).trim()) ? formatDateStr(date) : (formatDateStr(currentInv.date) || getTodayWITA());
     if (currentInv.status === 'Cancel' || currentInv.status === 'Batal') {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invoice yang sudah dibatalkan tidak dapat diedit' });
