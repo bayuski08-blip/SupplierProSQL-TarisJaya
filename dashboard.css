@@ -674,6 +674,10 @@
 .badge-status.belum { background: var(--rose-100); color: #e11d48; }
 .badge-status.sebagian { background: var(--amber-100); color: #d97706; }
 .badge-status.aktif { background: var(--emerald-100); color: #059669; }
+.badge-status.kedaluwarsa { background: var(--amber-100); color: #d97706; }
+.badge-status.dikonversi { background: var(--blue-100); color: var(--blue-600); }
+.badge-status.dibatalkan { background: #fee2e2; color: #e11d48; border: 1px solid #fecaca; font-weight: 600; }
+.badge-status.dari-invoice { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.7rem; padding: 2px 7px; margin-left: 4px; }
 .badge-status.rendah { background: var(--rose-100); color: #e11d48; }
 .badge-status.aman { background: var(--emerald-100); color: #059669; }
 .badge-status.tempo { background: var(--amber-100); color: #d97706; }
@@ -825,6 +829,7 @@
     grid-template-columns: 1fr 1fr;
     gap: 1.25rem;
     height: calc(100vh - var(--topbar-height) - 4rem);
+    min-width: 0;
 }
 
 .pos-products {
@@ -848,6 +853,15 @@
 .pos-category-tabs {
     display: flex;
     gap: 0.5rem;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scroll-behavior: smooth;
+}
+
+.pos-category-tabs::-webkit-scrollbar {
+    display: none;
 }
 
 .pos-category-tab {
@@ -933,8 +947,9 @@
 }
 
 .pos-cart-header {
-    padding: 1.25rem;
+    padding: 0.75rem 1.25rem;
     border-bottom: 1px solid var(--gray-100);
+    flex-shrink: 0;
 }
 
 .pos-cart-header h3 {
@@ -955,8 +970,13 @@
 }
 
 .pos-customer-select {
-    padding: 0.85rem 1.25rem;
+    padding: 0.6rem 1rem;
     border-bottom: 1px solid var(--gray-100);
+    flex-shrink: 0;
+    min-width: 0;
+    position: relative;
+    z-index: 30;
+    overflow: visible;
 }
 
 .pos-customer-select label {
@@ -982,7 +1002,9 @@
 
 .pos-cart-items {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 0;
 }
 
@@ -993,6 +1015,7 @@
     padding: 0.75rem 1.25rem;
     border-bottom: 1px solid var(--gray-100);
     transition: var(--transition);
+    box-sizing: border-box;
 }
 
 .cart-item:hover {
@@ -1127,16 +1150,21 @@
 
 .pos-cart-footer {
     border-top: 1px solid var(--gray-200);
-    padding: 1.25rem;
+    padding: 0.85rem 1rem;
     background: var(--gray-50);
+    min-width: 0;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
 .cart-summary-row {
     display: flex;
     justify-content: space-between;
-    margin-bottom: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.3rem;
     font-size: 0.85rem;
     color: var(--gray-600);
+    min-width: 0;
 }
 
 .cart-summary-row.total {
@@ -2059,262 +2087,17 @@ textarea.form-input {
     min-height: 0;
     box-sizing: border-box;
     vertical-align: middle;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 .invoice-items-table th {
     font-weight: bold;
 }
 .invoice-items-table td {
     font-weight: normal;
-}
-
-.invoice-bottom {
-    break-inside: avoid;
-    page-break-inside: avoid;
-}
-.invoice-signatures,
-.invoice-totals {
-    break-inside: avoid;
-    page-break-inside: avoid;
-}
-
-/* ---------- Fitur Pricelist Styles ---------- */
-.spin {
-    animation: spinPricelist 1s linear infinite;
-}
-@keyframes spinPricelist {
-    100% { transform: rotate(360deg); }
-}
-
-.inline-price-input {
-    width: 130px;
-    padding: 0.35rem 0.5rem;
-    font-size: 0.875rem;
-    font-weight: 600;
-    text-align: right;
-    border: 1px solid var(--gray-300);
-    border-radius: 0.375rem;
-    background: white;
-    color: var(--gray-800);
-    transition: all 0.2s ease;
-}
-.inline-price-input:focus {
-    outline: none;
-    border-color: var(--blue-500);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-.inline-price-input.is-saving {
-    background-color: #fef3c7;
-    border-color: #f59e0b;
-}
-.inline-price-input.is-saved {
-    background-color: #ecfdf5;
-    border-color: #10b981;
-}
-
-.badge-hpp-warning {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: #b45309;
-    background: #fef3c7;
-    padding: 0.15rem 0.45rem;
-    border-radius: 999px;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.badge-pricelist-source {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: #0369a1;
-    background: #e0f2fe;
-    padding: 0.12rem 0.45rem;
-    border-radius: 999px;
-    white-space: nowrap;
-}
-
-.badge-manual-source {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: #6d28d9;
-    background: #f3e8ff;
-    padding: 0.12rem 0.45rem;
-    border-radius: 999px;
-    white-space: nowrap;
-}
-
-.csv-dropzone {
-    border: 2px dashed var(--gray-300);
-    border-radius: 0.75rem;
-    padding: 1.5rem;
-    text-align: center;
-    background: var(--gray-50);
-    cursor: pointer;
-    transition: all 0.2s ease;
-}
-.csv-dropzone:hover, .csv-dropzone.dragover {
-    border-color: var(--blue-500);
-    background: var(--blue-50);
-}
-
-/* ==========================================================================
-   PAGINATION STYLING
-   ========================================================================== */
-.pagination-container {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    margin-top: 1rem;
-    margin-bottom: 1.5rem;
-    padding: 0 0.25rem;
-}
-
-.pagination-wrapper {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-}
-
-.pagination-info {
-    font-size: 0.85rem;
-    color: var(--gray-600);
-}
-
-.pagination-info b {
-    color: var(--gray-900);
-}
-
-.pagination-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.pagination-pages {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-}
-
-.pagination-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.4rem 0.75rem;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--gray-700);
-    background: white;
-    border: 1px solid var(--gray-300);
-    border-radius: 0.375rem;
-    cursor: pointer;
-    transition: all 0.15s ease-in-out;
-    min-width: 36px;
-    height: 34px;
-}
-
-.pagination-btn:hover:not(:disabled) {
-    background: var(--gray-50);
-    border-color: var(--gray-400);
-    color: var(--blue-600);
-}
-
-.pagination-btn.active {
-    background: var(--blue-600);
-    border-color: var(--blue-600);
-    color: white;
-    font-weight: 600;
-}
-
-.pagination-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    background: var(--gray-100);
-    border-color: var(--gray-200);
-    color: var(--gray-400);
-}
-
-.pagination-ellipsis {
-    padding: 0 0.4rem;
-    color: var(--gray-400);
-    font-weight: 600;
-    user-select: none;
-}
-
-.pagination-mobile-info {
-    display: none;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--gray-700);
-    padding: 0 0.5rem;
-}
-
-@media (max-width: 640px) {
-    .pagination-wrapper {
-        flex-direction: column;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    .pagination-info {
-        text-align: center;
-    }
-    .pagination-controls .desktop-only {
-        display: none !important;
-    }
-    .pagination-mobile-info.mobile-only {
-        display: inline-block !important;
-    }
-}
-
-
-
-/* ---------- Cart Order Date ---------- */
-.cart-order-date-wrapper {
-    margin-bottom: 0.75rem;
-}
-
-.cart-order-date-wrapper label {
-    font-size: 0.75rem;
-    color: var(--gray-600);
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-bottom: 4px;
-}
-
-.cart-order-date-wrapper input[type="date"] {
-    width: 100%;
-}
-
-@media (max-width: 768px) {
-    .cart-order-date-wrapper {
-        margin-bottom: 0.5rem;
-    }
-    .cart-order-date-wrapper label {
-        font-size: 0.72rem;
-        margin-bottom: 2px;
-    }
-    .cart-order-date-wrapper input[type="date"] {
-        padding: 0.4rem 0.6rem;
-        font-size: 0.8rem;
-    }
-}
-
-/* ---------- Invoice Multi-Page Print Styles ---------- */
 .invoice-compact-header-wrap {
     margin-bottom: 0.35rem;
     color: #000;
@@ -2595,4 +2378,297 @@ textarea.form-input {
         padding: 0.4rem 0.6rem;
         font-size: 0.8rem;
     }
+}
+
+/* ==========================================================================
+   Bagian A — POS Desktop Layout Redesign
+   ========================================================================== */
+
+/* ---------- A1: Desktop-only one-screen POS layout ---------- */
+@media (min-width: 1201px) {
+    body.pos-active .main-content {
+        overflow: hidden;
+        height: 100vh;
+    }
+
+    body.pos-active .content-area {
+        overflow: hidden;
+        height: calc(100vh - var(--topbar-height));
+        /* Kurangi padding lateral agar panel keranjang tidak terpotong */
+        padding: 1rem 1.25rem;
+        padding-bottom: 0;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        width: 100%;
+    }
+
+    body.pos-active #page-pos.active {
+        flex: 1;
+        overflow: hidden;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    body.pos-active .pos-layout {
+        height: 100%;
+        flex: 1;
+        min-height: 0;
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+
+    /* A3: Lebarkan panel keranjang — kartunya lebih proporsional */
+    /* Ganti % dengan fr agar grid menghormati gap dan tidak meluap */
+    .pos-layout {
+        grid-template-columns: minmax(0, 58fr) minmax(0, 42fr);
+    }
+
+    /* Panel keranjang: pastikan tidak meluap dari kolomnya */
+    .pos-cart {
+        min-width: 0;
+        width: 100%;
+        box-sizing: border-box;
+        overflow: hidden;
+    }
+
+    /* Panel produk: pastikan tidak meluap */
+    .pos-products {
+        min-width: 0;
+        width: 100%;
+        box-sizing: border-box;
+        overflow: hidden;
+    }
+
+    /* A4: Padatkan pos-cart-footer shrink */
+    .pos-cart-footer {
+        flex-shrink: 0;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+
+    /* Customer search wrapper: tidak boleh meluap namun dropdown tetap terlihat */
+    .pos-customer-select {
+        min-width: 0;
+        position: relative;
+        z-index: 30;
+        overflow: visible;
+    }
+
+    .customer-search-wrapper {
+        min-width: 0;
+        width: 100%;
+        box-sizing: border-box;
+        position: relative;
+        overflow: visible;
+    }
+
+    /* Div flex pembungkus search input agar tidak meluap ke luar panel */
+    .customer-search-wrapper > div:first-child {
+        min-width: 0;
+        overflow: hidden;
+        box-sizing: border-box;
+    }
+
+    /* Input pencarian pelanggan: tidak boleh meluap */
+    #pos-customer-search {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+    }
+
+    /* Summary row: label shrink, nilai tidak boleh terpotong */
+    .cart-summary-row {
+        min-width: 0;
+    }
+
+    .cart-summary-row > span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        flex: 1;
+    }
+
+    .cart-summary-row > span:last-child {
+        white-space: nowrap;
+        flex-shrink: 0;
+        margin-left: 0.5rem;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* Total row khusus */
+    .cart-summary-row.total > span:last-child {
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    /* Tombol aksi keranjang: tidak boleh meluap, stack jika sempit */
+    .cart-actions-row {
+        min-width: 0;
+        box-sizing: border-box;
+    }
+
+    /* Tombol Cetak Proforma: hapus min-width kaku */
+    .btn-proforma-checkout {
+        min-width: 0;
+        flex-shrink: 1;
+    }
+}
+
+/* ---------- A2: 2-column footer row layout ---------- */
+.cart-footer-row-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+/* Pastikan isi kolom 2-col tidak meluap */
+.cart-footer-row-2col > div {
+    min-width: 0;
+    overflow: hidden;
+}
+
+.cart-footer-row-2col select,
+.cart-footer-row-2col input[type="date"] {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+/* ---------- A5: Empty state compacted in cart ---------- */
+#pos-cart-items .empty-state {
+    padding: 1.5rem 1rem;
+}
+
+#pos-cart-items .empty-state i {
+    width: 32px;
+    height: 32px;
+    margin-bottom: 0.5rem;
+}
+
+#pos-cart-items .empty-state p {
+    font-size: 0.82rem;
+}
+
+/* ---------- A6: Cart item highlight animation ---------- */
+@keyframes cartItemHighlight {
+    0% { background: var(--blue-50, #eff6ff); }
+    100% { background: transparent; }
+}
+
+.cart-item-highlight {
+    animation: cartItemHighlight 1s ease-out;
+}
+
+/* ---------- A6: Fee indicator badge ---------- */
+.fee-indicator {
+    font-size: 0.6rem;
+    background: #fef3c7;
+    color: #92400e;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 4px;
+    font-weight: 600;
+}
+
+/* ---------- Cart fee toggle button ---------- */
+.cart-fee-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--amber-500, #f59e0b);
+    padding: 2px 4px;
+    font-size: 0.65rem;
+    border-radius: 3px;
+    transition: background 0.15s;
+}
+
+.cart-fee-toggle:hover {
+    background: #fef3c7;
+}
+
+/* ---------- Proforma Actions & Badges (Bagian B) ---------- */
+.cart-actions-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: stretch;
+    margin-top: 0.75rem;
+}
+
+.cart-actions-row .btn-checkout {
+    flex: 1.6;
+}
+
+.btn-proforma-checkout {
+    flex: 1;
+    min-width: 130px;
+    padding: 0.85rem 0.6rem;
+    border-radius: 10px;
+    background: white;
+    color: var(--blue-600);
+    border: 1.5px solid var(--blue-600);
+    font-size: 0.88rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: var(--transition);
+    font-family: var(--font-main);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+}
+
+.btn-proforma-checkout:hover {
+    background: var(--blue-50);
+    border-color: var(--blue-700);
+    color: var(--blue-700);
+}
+
+.btn-proforma-checkout:disabled,
+.btn-checkout:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+    .cart-actions-row {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    .cart-actions-row .btn-checkout {
+        width: 100%;
+    }
+    .btn-proforma-checkout {
+        width: 100%;
+        padding: 0.65rem;
+        font-size: 0.82rem;
+    }
+}
+
+.badge-status-aktif {
+    background: #dcfce7 !important;
+    color: #166534 !important;
+    border: 1px solid #bbf7d0;
+}
+.badge-status-kedaluwarsa {
+    background: #fef3c7 !important;
+    color: #92400e !important;
+    border: 1px solid #fde68a;
+}
+.badge-status-dikonversi {
+    background: #dbeafe !important;
+    color: #1e40af !important;
+    border: 1px solid #bfdbfe;
+}
+.badge-status-dibatalkan {
+    background: #fee2e2 !important;
+    color: #991b1b !important;
+    border: 1px solid #fecaca;
 }
