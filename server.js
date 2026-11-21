@@ -314,6 +314,149 @@ pool.query(`
   }
 })();
 
+// Auto-migrate: Batch B tables, counters, and deposit/return columns
+(async () => {
+  try {
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS stock_moves (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id VARCHAR(255) NOT NULL,
+        tanggal DATETIME NOT NULL,
+        tipe VARCHAR(50) NOT NULL,
+        ref_type VARCHAR(50) NULL,
+        ref_id VARCHAR(255) NULL,
+        ref_no VARCHAR(255) NULL,
+        qty_masuk DECIMAL(20,4) NOT NULL DEFAULT 0,
+        qty_keluar DECIMAL(20,4) NOT NULL DEFAULT 0,
+        qty_sebelum DECIMAL(20,4) NOT NULL DEFAULT 0,
+        qty_sesudah DECIMAL(20,4) NOT NULL DEFAULT 0,
+        keterangan TEXT NULL,
+        created_by INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        is_backfill TINYINT(1) NOT NULL DEFAULT 0,
+        INDEX idx_stock_moves_product (product_id),
+        INDEX idx_stock_moves_tanggal (tanggal),
+        INDEX idx_stock_moves_tipe (tipe),
+        INDEX idx_stock_moves_ref (ref_type, ref_id),
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS return_counters (
+        year INT NOT NULL PRIMARY KEY,
+        last_sales_number INT NOT NULL DEFAULT 0,
+        last_purchase_number INT NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS sales_returns (
+        id VARCHAR(255) PRIMARY KEY,
+        invoice_id VARCHAR(255) NOT NULL,
+        customer_id VARCHAR(255) NULL,
+        date DATE NOT NULL,
+        total_refund DECIMAL(20,4) NOT NULL DEFAULT 0,
+        piutang_deduction DECIMAL(20,4) NOT NULL DEFAULT 0,
+        customer_deposit_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL,
+        user_id INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_sr_invoice (invoice_id),
+        INDEX idx_sr_customer (customer_id),
+        INDEX idx_sr_date (date),
+        FOREIGN KEY (invoice_id) REFERENCES sales_invoices(id) ON DELETE RESTRICT,
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS sales_return_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        return_id VARCHAR(255) NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        quantity DECIMAL(20,4) NOT NULL,
+        condition_type VARCHAR(50) NOT NULL,
+        price DECIMAL(20,4) NOT NULL,
+        cost_price_snapshot DECIMAL(20,4) NOT NULL DEFAULT 0,
+        subtotal DECIMAL(20,4) NOT NULL DEFAULT 0,
+        refund_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        INDEX idx_sri_return (return_id),
+        INDEX idx_sri_product (product_id),
+        FOREIGN KEY (return_id) REFERENCES sales_returns(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS purchase_returns (
+        id VARCHAR(255) PRIMARY KEY,
+        purchase_order_id VARCHAR(255) NOT NULL,
+        vendor_id VARCHAR(255) NULL,
+        date DATE NOT NULL,
+        total_refund DECIMAL(20,4) NOT NULL DEFAULT 0,
+        hutang_deduction DECIMAL(20,4) NOT NULL DEFAULT 0,
+        vendor_deposit_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL,
+        user_id INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_pr_po (purchase_order_id),
+        INDEX idx_pr_vendor (vendor_id),
+        INDEX idx_pr_date (date),
+        FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+
+    await mysqlPool.query(`
+      CREATE TABLE IF NOT EXISTS purchase_return_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        return_id VARCHAR(255) NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        quantity DECIMAL(20,4) NOT NULL,
+        cost DECIMAL(20,4) NOT NULL,
+        subtotal DECIMAL(20,4) NOT NULL DEFAULT 0,
+        refund_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        INDEX idx_pri_return (return_id),
+        INDEX idx_pri_product (product_id),
+        FOREIGN KEY (return_id) REFERENCES purchase_returns(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+
+    const [custCols] = await mysqlPool.query("SHOW COLUMNS FROM customers LIKE 'deposit'");
+    if (!custCols || custCols.length === 0) {
+      await mysqlPool.query("ALTER TABLE customers ADD COLUMN deposit DECIMAL(20,4) NOT NULL DEFAULT 0 AFTER credit_lmt");
+      console.log('[Startup] Added deposit column to customers');
+    }
+
+    const [vendCols] = await mysqlPool.query("SHOW COLUMNS FROM vendors LIKE 'deposit'");
+    if (!vendCols || vendCols.length === 0) {
+      await mysqlPool.query("ALTER TABLE vendors ADD COLUMN deposit DECIMAL(20,4) NOT NULL DEFAULT 0 AFTER phone");
+      console.log('[Startup] Added deposit column to vendors');
+    }
+
+    const [invCols] = await mysqlPool.query("SHOW COLUMNS FROM sales_invoices LIKE 'return_amount'");
+    if (!invCols || invCols.length === 0) {
+      await mysqlPool.query("ALTER TABLE sales_invoices ADD COLUMN return_amount DECIMAL(20,4) NOT NULL DEFAULT 0 AFTER paid_amount");
+      console.log('[Startup] Added return_amount column to sales_invoices');
+    }
+
+    const [poCols] = await mysqlPool.query("SHOW COLUMNS FROM purchase_orders LIKE 'return_amount'");
+    if (!poCols || poCols.length === 0) {
+      await mysqlPool.query("ALTER TABLE purchase_orders ADD COLUMN return_amount DECIMAL(20,4) NOT NULL DEFAULT 0 AFTER paid_amount");
+      console.log('[Startup] Added return_amount column to purchase_orders');
+    }
+
+    console.log('[Startup] Batch B schema and tables ready.');
+  } catch (err) {
+    console.error('[Startup] Failed to check/migrate Batch B schema:', err.message);
+  }
+})();
+
 // MySQL auto-manages AUTO_INCREMENT — no sequence reset needed
 
 // Seed/upgrade payment_types on startup
@@ -525,6 +668,137 @@ async function generatePaymentNo(pgClient, paymentDate) {
   const nextNum = Number(result.rows[0].next_number);
   const padded = String(nextNum).padStart(5, '0');
   return `PAY-${year}-${mm}-${padded}`;
+}
+
+/**
+ * Generates the next purchase order payment reference number using an atomic per-year counter.
+ * Format: POP-{YYYY}-{MM}-{NNNNN}
+ * - Resets only on year change, NOT on month change.
+ * - Uses LAST_INSERT_ID() trick for race-condition-safe increment.
+ *
+ * @param {object} pgClient pgify-wrapped client from pool.connect()
+ * @param {string} paymentDate ISO date string of the payment (e.g. '2026-11-21')
+ * @returns {string} e.g. 'POP-2026-11-00001'
+ */
+async function generatePurchasePaymentNo(pgClient, paymentDate) {
+  const d = paymentDate ? new Date(paymentDate) : new Date();
+  const year = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+
+  await pgClient.query(
+    `INSERT INTO purchase_payment_counters (year, last_number) VALUES (?, LAST_INSERT_ID(1))
+     ON DUPLICATE KEY UPDATE last_number = LAST_INSERT_ID(last_number + 1)`,
+    [year]
+  );
+
+  const result = await pgClient.query('SELECT LAST_INSERT_ID() AS next_number');
+  const nextNum = Number(result.rows[0].next_number);
+  const padded = String(nextNum).padStart(5, '0');
+  return `POP-${year}-${mm}-${padded}`;
+}
+
+/**
+ * Generate Sales Return ID: RTJ-{YYYY}-{MM}-{NNNNN}
+ */
+async function generateSalesReturnId(pgClient, returnDate) {
+  const d = returnDate ? new Date(returnDate) : new Date();
+  const year = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+
+  await pgClient.query(
+    `INSERT INTO return_counters (year, last_sales_number, last_purchase_number) VALUES (?, LAST_INSERT_ID(1), 0)
+     ON DUPLICATE KEY UPDATE last_sales_number = LAST_INSERT_ID(last_sales_number + 1)`,
+    [year]
+  );
+
+  const result = await pgClient.query('SELECT LAST_INSERT_ID() AS next_number');
+  const nextNum = Number(result.rows[0].next_number);
+  const padded = String(nextNum).padStart(5, '0');
+  return `RTJ-${year}-${mm}-${padded}`;
+}
+
+/**
+ * Generate Purchase Return ID: RTB-{YYYY}-{MM}-{NNNNN}
+ */
+async function generatePurchaseReturnId(pgClient, returnDate) {
+  const d = returnDate ? new Date(returnDate) : new Date();
+  const year = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+
+  await pgClient.query(
+    `INSERT INTO return_counters (year, last_sales_number, last_purchase_number) VALUES (?, 0, LAST_INSERT_ID(1))
+     ON DUPLICATE KEY UPDATE last_purchase_number = LAST_INSERT_ID(last_purchase_number + 1)`,
+    [year]
+  );
+
+  const result = await pgClient.query('SELECT LAST_INSERT_ID() AS next_number');
+  const nextNum = Number(result.rows[0].next_number);
+  const padded = String(nextNum).padStart(5, '0');
+  return `RTB-${year}-${mm}-${padded}`;
+}
+
+/**
+ * Record stock move entry in the current transaction/connection
+ * CRITICAL RULE: NO financial data (price, cost, HPP, cash) stored here!
+ */
+async function recordStockMove(conn, {
+  product_id,
+  tanggal,
+  tipe,
+  ref_type,
+  ref_id,
+  ref_no,
+  qty_masuk = 0,
+  qty_keluar = 0,
+  qty_sebelum = null,
+  qty_sesudah = null,
+  keterangan = null,
+  created_by = null,
+  is_backfill = 0
+}) {
+  if (!product_id) return null;
+
+  let before = qty_sebelum;
+  let after = qty_sesudah;
+
+  if (before === null || after === null) {
+    const prodRes = await conn.query('SELECT stock FROM products WHERE id = ?', [product_id]);
+    const current = parseFloat(prodRes.rows[0]?.stock || 0);
+    if (before === null && after !== null) {
+      before = current;
+    } else if (before !== null && after === null) {
+      after = current;
+    } else {
+      before = current;
+      after = current + (parseFloat(qty_masuk) || 0) - (parseFloat(qty_keluar) || 0);
+    }
+  }
+
+  const dt = tanggal || (new Date().toISOString().slice(0, 19).replace('T', ' '));
+
+  const insertSql = `
+    INSERT INTO stock_moves (
+      product_id, tanggal, tipe, ref_type, ref_id, ref_no,
+      qty_masuk, qty_keluar, qty_sebelum, qty_sesudah,
+      keterangan, created_by, is_backfill
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  await conn.query(insertSql, [
+    product_id,
+    dt,
+    tipe,
+    ref_type || null,
+    ref_id ? String(ref_id) : null,
+    ref_no ? String(ref_no) : (ref_id ? String(ref_id) : null),
+    parseFloat(qty_masuk) || 0,
+    parseFloat(qty_keluar) || 0,
+    parseFloat(before) || 0,
+    parseFloat(after) || 0,
+    keterangan || null,
+    created_by || null,
+    is_backfill ? 1 : 0
+  ]);
 }
 
 // Authentication Middleware
@@ -883,68 +1157,101 @@ app.post('/api/settings', authenticateToken, authorizeRoles('admin'), async (req
 // --- Dashboard & Summary Routes ---
 app.get('/api/dashboard/summary', authenticateToken, async (req, res) => {
   try {
-    // Revenue (omzet) - semua invoice yang tidak batal
-    const revenueResult = await pool.query("SELECT SUM(total) as revenue FROM sales_invoices WHERE status NOT IN ('Batal', 'Cancel', 'Dibatalkan')");
-    const revenue = parseFloat(revenueResult.rows[0].revenue || 0);
+    const role = (req.user?.role || 'kasir').toLowerCase();
+    const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+    const canSeePayables = ['admin', 'gudang', 'owner'].includes(role);
+    const canSeeOrders = ['admin', 'finance', 'kasir', 'owner'].includes(role);
+    const canSeeCustomers = ['admin', 'finance', 'kasir', 'owner'].includes(role);
+    const canSeeProducts = ['admin', 'gudang', 'kasir', 'finance', 'owner'].includes(role);
 
-    // Piutang - invoice yang belum lunas
-    const receivablesResult = await pool.query("SELECT SUM(total - paid_amount) as receivables FROM sales_invoices WHERE status NOT IN ('Lunas', 'Batal', 'Cancel', 'Dibatalkan')");
-    const receivables = parseFloat(receivablesResult.rows[0].receivables || 0);
-
-    // Hutang ke vendor - PO yang belum selesai
-    const payablesResult = await pool.query("SELECT SUM(total - paid_amount) as payables FROM purchase_orders WHERE status NOT IN ('Selesai', 'Batal', 'Cancel', 'Dibatalkan')");
-    const payables = parseFloat(payablesResult.rows[0].payables || 0);
-
-    // Stok menipis
-    const lowStockResult = await pool.query('SELECT id, name, stock, min_stock FROM products WHERE stock <= min_stock ORDER BY stock ASC');
+    // Stok menipis - HANYA produk aktif (A1 & A2)
+    const lowStockResult = await pool.query('SELECT id, name, stock, min_stock FROM products WHERE (is_active = 1 OR is_active IS NULL) AND stock <= min_stock ORDER BY stock ASC');
     const lowStockProducts = lowStockResult.rows;
 
-    // Laba Kotor (Revenue - HPP)
-    const hppResult = await pool.query(`
-      SELECT COALESCE(SUM(ii.quantity * p.cost_price), 0) as hpp
-      FROM invoice_items ii
-      JOIN products p ON ii.product_id = p.id
-      JOIN sales_invoices si ON ii.invoice_id = si.id
-      WHERE si.status NOT IN ('Batal', 'Cancel', 'Dibatalkan')
-    `);
-    const hpp = parseFloat(hppResult.rows[0].hpp || 0);
-    const grossProfit = revenue - hpp;
+    let revenue = 0, receivables = 0, payables = 0, grossProfit = 0, unpaidCount = 0;
+    if (canSeePayables) {
+      // Hutang ke vendor - PO yang belum selesai
+      const payablesResult = await pool.query("SELECT SUM(total - paid_amount - COALESCE(return_amount, 0)) as payables FROM purchase_orders WHERE status NOT IN ('Selesai', 'Batal', 'Cancel', 'Dibatalkan')");
+      payables = parseFloat(payablesResult.rows[0]?.payables || 0);
+    }
 
-    // Order hari ini
-    const today = new Date().toISOString().split('T')[0];
-    const ordersTodayResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE DATE(date) = ? AND status NOT IN ('Batal', 'Cancel', 'Dibatalkan')", [today]);
-    const ordersToday = parseInt(ordersTodayResult.rows[0].count || 0);
+    if (canSeeFinance) {
+      // Revenue (omzet) - semua invoice yang tidak batal
+      const revenueResult = await pool.query("SELECT SUM(total) as revenue FROM sales_invoices WHERE status NOT IN ('Batal', 'Cancel', 'Dibatalkan')");
+      revenue = parseFloat(revenueResult.rows[0]?.revenue || 0);
 
-    // Jumlah pelanggan aktif
-    const customersResult = await pool.query('SELECT COUNT(*) as count FROM customers');
-    const customerCount = parseInt(customersResult.rows[0].count || 0);
+      // Piutang - invoice yang belum lunas
+      const receivablesResult = await pool.query("SELECT SUM(total - paid_amount - COALESCE(return_amount, 0)) as receivables FROM sales_invoices WHERE status NOT IN ('Lunas', 'Batal', 'Cancel', 'Dibatalkan')");
+      receivables = parseFloat(receivablesResult.rows[0]?.receivables || 0);
 
-    // Jumlah produk
-    const productsResult = await pool.query('SELECT COUNT(*) as count FROM products');
-    const productCount = parseInt(productsResult.rows[0].count || 0);
+      // Laba Kotor (Revenue - HPP)
+      const hppResult = await pool.query(`
+        SELECT COALESCE(SUM(ii.quantity * p.cost_price), 0) as hpp
+        FROM invoice_items ii
+        JOIN products p ON ii.product_id = p.id
+        JOIN sales_invoices si ON ii.invoice_id = si.id
+        WHERE si.status NOT IN ('Batal', 'Cancel', 'Dibatalkan')
+      `);
+      const hpp = parseFloat(hppResult.rows[0]?.hpp || 0);
+      grossProfit = revenue - hpp;
 
-    // Jumlah invoice belum lunas (untuk badge piutang)
-    const unpaidCountResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE status NOT IN ('Lunas', 'Batal', 'Cancel', 'Dibatalkan')");
-    const unpaidCount = parseInt(unpaidCountResult.rows[0].count || 0);
+      // Jumlah invoice belum lunas (untuk badge piutang)
+      const unpaidCountResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE status NOT IN ('Lunas', 'Batal', 'Cancel', 'Dibatalkan')");
+      unpaidCount = parseInt(unpaidCountResult.rows[0]?.count || 0);
+    }
 
-    res.json({
-      revenue,
-      receivables,
-      payables,
+    let ordersToday = 0;
+    if (canSeeOrders) {
+      const today = new Date().toISOString().split('T')[0];
+      const ordersTodayResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE DATE(date) = ? AND status NOT IN ('Batal', 'Cancel', 'Dibatalkan')", [today]);
+      ordersToday = parseInt(ordersTodayResult.rows[0]?.count || 0);
+    }
+
+    let customerCount = 0;
+    if (canSeeCustomers) {
+      const customersResult = await pool.query('SELECT COUNT(*) as count FROM customers');
+      customerCount = parseInt(customersResult.rows[0]?.count || 0);
+    }
+
+    let productCount = 0;
+    if (canSeeProducts) {
+      const productsResult = await pool.query('SELECT COUNT(*) as count FROM products WHERE (is_active = 1 OR is_active IS NULL)');
+      productCount = parseInt(productsResult.rows[0]?.count || 0);
+    }
+
+    // Bangun response sesuai peran (A7: dashboard per role)
+    const responseData = {
       lowStockCount: lowStockProducts.length,
       lowStockProducts,
-      grossProfit,
-      ordersToday,
-      customerCount,
-      productCount,
-      unpaidCount
-    });
+    };
+
+    if (canSeeFinance) {
+      responseData.revenue = revenue;
+      responseData.receivables = receivables;
+      responseData.payables = payables;
+      responseData.grossProfit = grossProfit;
+      responseData.unpaidCount = unpaidCount;
+    }
+
+    if (canSeeOrders) {
+      responseData.ordersToday = ordersToday;
+    }
+
+    if (canSeeCustomers) {
+      responseData.customerCount = customerCount;
+    }
+
+    if (canSeeProducts) {
+      responseData.productCount = productCount;
+    }
+
+    res.json(responseData);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/dashboard/sales-trend', authenticateToken, async (req, res) => {
+app.get('/api/dashboard/sales-trend', authenticateToken, authorizeRoles('admin', 'finance', 'owner'), async (req, res) => {
   const days = parseInt(req.query.days) || 7;
   try {
     const query = `
@@ -1005,7 +1312,7 @@ app.get('/api/dashboard/sales-trend', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/api/dashboard/sales-composition', authenticateToken, async (req, res) => {
+app.get('/api/dashboard/sales-composition', authenticateToken, authorizeRoles('admin', 'finance', 'owner'), async (req, res) => {
   const days = parseInt(req.query.days) || 30;
   try {
     // MySQL: compute total first, then calculate percentages
@@ -1040,7 +1347,7 @@ app.get('/api/dashboard/sales-composition', authenticateToken, async (req, res) 
 // --- Products Routes ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    const { customer_id, page, limit: limitQ, q, search, category, stock_status, paginate, all } = req.query;
+    const { customer_id, page, limit: limitQ, q, search, category, stock_status, status, paginate, all } = req.query;
     const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
 
     const whereConditions = [];
@@ -1062,6 +1369,16 @@ app.get('/api/products', authenticateToken, async (req, res) => {
       whereConditions.push('p.stock <= p.min_stock');
     } else if (stock_status === 'safe') {
       whereConditions.push('p.stock > p.min_stock');
+    }
+
+    // A2.2 Filter status: active (default), inactive, all
+    if (status === 'inactive') {
+      whereConditions.push('p.is_active = 0');
+    } else if (status === 'all') {
+      // Tidak ada filter status
+    } else {
+      // Default: hanya produk aktif
+      whereConditions.push('(p.is_active = 1 OR p.is_active IS NULL)');
     }
 
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
@@ -1096,7 +1413,13 @@ app.get('/api/products', authenticateToken, async (req, res) => {
             CASE WHEN pi.harga IS NOT NULL THEN 'pricelist' ELSE 'master' END AS sumber_harga,
             pl.id AS pricelist_id,
             pl.nama AS pricelist_nama,
-            pl.kode AS pricelist_kode
+            pl.kode AS pricelist_kode,
+            (
+              EXISTS(SELECT 1 FROM invoice_items ii WHERE ii.product_id = p.id) OR
+              EXISTS(SELECT 1 FROM purchase_order_items poi WHERE poi.product_id = p.id) OR
+              EXISTS(SELECT 1 FROM proforma_items pfi WHERE pfi.product_id = p.id)
+            ) AS has_transactions,
+            EXISTS(SELECT 1 FROM pricelist_items pli WHERE pli.product_id = p.id) AS has_pricelists
           FROM products p 
           LEFT JOIN product_categories c ON p.category_id = c.id 
           LEFT JOIN product_units u ON p.unit_id = u.id
@@ -1119,7 +1442,13 @@ app.get('/api/products', authenticateToken, async (req, res) => {
             'master' AS sumber_harga,
             NULL AS pricelist_id,
             NULL AS pricelist_nama,
-            NULL AS pricelist_kode
+            NULL AS pricelist_kode,
+            (
+              EXISTS(SELECT 1 FROM invoice_items ii WHERE ii.product_id = p.id) OR
+              EXISTS(SELECT 1 FROM purchase_order_items poi WHERE poi.product_id = p.id) OR
+              EXISTS(SELECT 1 FROM proforma_items pfi WHERE pfi.product_id = p.id)
+            ) AS has_transactions,
+            EXISTS(SELECT 1 FROM pricelist_items pli WHERE pli.product_id = p.id) AS has_pricelists
           FROM products p 
           LEFT JOIN product_categories c ON p.category_id = c.id 
           LEFT JOIN product_units u ON p.unit_id = u.id
@@ -1158,7 +1487,13 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           CASE WHEN pi.harga IS NOT NULL THEN 'pricelist' ELSE 'master' END AS sumber_harga,
           pl.id AS pricelist_id,
           pl.nama AS pricelist_nama,
-          pl.kode AS pricelist_kode
+          pl.kode AS pricelist_kode,
+          (
+            EXISTS(SELECT 1 FROM invoice_items ii WHERE ii.product_id = p.id) OR
+            EXISTS(SELECT 1 FROM purchase_order_items poi WHERE poi.product_id = p.id) OR
+            EXISTS(SELECT 1 FROM proforma_items pfi WHERE pfi.product_id = p.id)
+          ) AS has_transactions,
+          EXISTS(SELECT 1 FROM pricelist_items pli WHERE pli.product_id = p.id) AS has_pricelists
         FROM products p 
         LEFT JOIN product_categories c ON p.category_id = c.id 
         LEFT JOIN product_units u ON p.unit_id = u.id
@@ -1179,7 +1514,13 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           'master' AS sumber_harga,
           NULL AS pricelist_id,
           NULL AS pricelist_nama,
-          NULL AS pricelist_kode
+          NULL AS pricelist_kode,
+          (
+            EXISTS(SELECT 1 FROM invoice_items ii WHERE ii.product_id = p.id) OR
+            EXISTS(SELECT 1 FROM purchase_order_items poi WHERE poi.product_id = p.id) OR
+            EXISTS(SELECT 1 FROM proforma_items pfi WHERE pfi.product_id = p.id)
+          ) AS has_transactions,
+          EXISTS(SELECT 1 FROM pricelist_items pli WHERE pli.product_id = p.id) AS has_pricelists
         FROM products p 
         LEFT JOIN product_categories c ON p.category_id = c.id 
         LEFT JOIN product_units u ON p.unit_id = u.id
@@ -1219,7 +1560,23 @@ app.post('/api/products', authenticateToken, authorizeRoles('admin', 'gudang'), 
   try {
     const prefix = await getSetting('prefix_product', 'P');
     const nextId = await generateNextId(pool, 'products', prefix);
-    await pool.query(insertQuery, [id || nextId, sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id || 'PU-1']);
+    const targetId = id || nextId;
+    await pool.query(insertQuery, [targetId, sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id || 'PU-1']);
+    if (parseFloat(stock || 0) > 0) {
+      await recordStockMove(pool, {
+        product_id: targetId,
+        tipe: 'stok_awal',
+        ref_type: 'product',
+        ref_id: targetId,
+        ref_no: sku || targetId,
+        qty_masuk: parseFloat(stock),
+        qty_keluar: 0,
+        qty_sebelum: 0,
+        qty_sesudah: parseFloat(stock),
+        keterangan: 'Stok Awal Produk Baru',
+        created_by: req.user?.id
+      });
+    }
     res.json({ success: true, message: 'Produk berhasil ditambahkan' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -1232,9 +1589,28 @@ app.put('/api/products/:id', authenticateToken, authorizeRoles('admin', 'gudang'
   const brandVal = (brand !== undefined && brand !== null && String(brand).trim() !== '') ? String(brand).trim() : null;
   const updateQuery = 'UPDATE products SET sku = $1, brand = $2, name = $3, category_id = $4, cost_price = $5, sell_price = $6, stock = $7, min_stock = $8, unit_id = $9 WHERE id = $10';
   try {
+    const curRes = await pool.query('SELECT stock FROM products WHERE id = $1', [id]);
+    const oldStock = parseFloat(curRes.rows[0]?.stock || 0);
+    const newStock = parseFloat(stock !== undefined ? stock : oldStock);
     const result = await pool.query(updateQuery, [sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id, id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Produk tidak ditemukan' });
+    }
+    if (newStock !== oldStock) {
+      const diff = newStock - oldStock;
+      await recordStockMove(pool, {
+        product_id: id,
+        tipe: 'koreksi_edit',
+        ref_type: 'product',
+        ref_id: id,
+        ref_no: sku || id,
+        qty_masuk: diff > 0 ? diff : 0,
+        qty_keluar: diff < 0 ? Math.abs(diff) : 0,
+        qty_sebelum: oldStock,
+        qty_sesudah: newStock,
+        keterangan: 'Edit Produk langsung (stok diubah manual)',
+        created_by: req.user?.id
+      });
     }
     res.json({ success: true, message: 'Produk berhasil diperbarui' });
   } catch (err) {
@@ -1244,13 +1620,43 @@ app.put('/api/products/:id', authenticateToken, authorizeRoles('admin', 'gudang'
 
 app.delete('/api/products/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
   const { id } = req.params;
-  const deleteQuery = 'DELETE FROM products WHERE id = $1';
   try {
-    const result = await pool.query(deleteQuery, [id]);
+    // A2.1: Proteksi delete - periksa riwayat transaksi
+    const invCheck = await pool.query('SELECT 1 FROM invoice_items WHERE product_id = ? LIMIT 1', [id]);
+    const poCheck = await pool.query('SELECT 1 FROM purchase_order_items WHERE product_id = ? LIMIT 1', [id]);
+    const profCheck = await pool.query('SELECT 1 FROM proforma_items WHERE product_id = ? LIMIT 1', [id]);
+
+    if ((invCheck.rows && invCheck.rows.length > 0) || (poCheck.rows && poCheck.rows.length > 0) || (profCheck.rows && profCheck.rows.length > 0)) {
+      return res.status(400).json({ error: 'Produk sudah memiliki riwayat transaksi, gunakan Nonaktifkan' });
+    }
+
+    // Jika produk terdaftar di Special Price (pricelist), hapus baris harga tersebut
+    await pool.query('DELETE FROM pricelist_items WHERE product_id = ?', [id]);
+
+    const result = await pool.query('DELETE FROM products WHERE id = ?', [id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Produk tidak ditemukan' });
     }
     res.json({ success: true, message: 'Produk berhasil dihapus' });
+  } catch (err) {
+    if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.errno === 1451) {
+      return res.status(400).json({ error: 'Produk sudah memiliki riwayat transaksi, gunakan Nonaktifkan' });
+    }
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// A2.2: Nonaktifkan / Aktifkan produk
+app.patch('/api/products/:id/status', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  const { id } = req.params;
+  const { is_active } = req.body;
+  try {
+    const activeVal = (is_active === 1 || is_active === true || is_active === '1') ? 1 : 0;
+    const result = await pool.query('UPDATE products SET is_active = ? WHERE id = ?', [activeVal, id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Produk tidak ditemukan' });
+    }
+    res.json({ success: true, is_active: activeVal, message: `Produk berhasil ${activeVal ? 'diaktifkan' : 'dinonaktifkan'}` });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1296,6 +1702,20 @@ app.post('/api/stock-adjust', authenticateToken, authorizeRoles('admin', 'gudang
       'INSERT INTO cash_transactions (id, date, type, category, description, amount, method, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
       [ctId, ctDate, txType, 'Penyesuaian Stok', desc, amount, 'Stock Opname', userId]
     );
+    await recordStockMove(client, {
+      product_id: product_id,
+      tanggal: ctDate ? ctDate + ' 12:00:00' : null,
+      tipe: 'opname',
+      ref_type: 'stock_adjustment',
+      ref_id: ctId,
+      ref_no: ctId,
+      qty_masuk: diff > 0 ? diff : 0,
+      qty_keluar: diff < 0 ? Math.abs(diff) : 0,
+      qty_sebelum: oldStock,
+      qty_sesudah: newStock,
+      keterangan: desc,
+      created_by: userId
+    });
     await client.query('COMMIT');
     res.json({ success: true, old_stock: oldStock, new_stock: newStock, type: txType, amount });
   } catch (err) {
@@ -1502,6 +1922,26 @@ app.put('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir'
   }
 });
 
+// PATCH /api/customers/:id/pricelist - Khusus update penetapan Special Price ke pelanggan (Admin, Owner, Kasir)
+app.patch('/api/customers/:id/pricelist', authenticateToken, authorizeRoles('admin', 'kasir', 'owner'), async (req, res) => {
+  const { id } = req.params;
+  const { pricelist_id } = req.body;
+  const plId = (pricelist_id !== undefined && pricelist_id !== null && String(pricelist_id).trim() !== '') ? parseInt(pricelist_id, 10) : null;
+  if (plId) {
+    const plCheck = await pool.query('SELECT id FROM pricelists WHERE id = ? AND is_active = 1', [plId]);
+    if (plCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Pricelist tidak ditemukan atau tidak aktif' });
+    }
+  }
+  try {
+    const result = await pool.query('UPDATE customers SET pricelist_id = ? WHERE id = ?', [plId, id]);
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
+    res.json({ success: true, message: 'Special Price pelanggan berhasil diperbarui', pricelist_id: plId });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.delete('/api/customers/:id', authenticateToken, authorizeRoles('admin', 'kasir', 'owner'), async (req, res) => {
   const { id } = req.params;
   const deleteQuery = 'DELETE FROM customers WHERE id = $1';
@@ -1648,7 +2088,7 @@ app.get('/api/pricelists/effective-prices', authenticateToken, authorizeRoles('a
 });
 
 // POST /api/pricelists - Buat pricelist baru
-app.post('/api/pricelists', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+app.post('/api/pricelists', authenticateToken, authorizeRoles('admin', 'owner', 'kasir'), async (req, res) => {
   const { nama, keterangan } = req.body;
   if (!nama || !nama.trim()) {
     return res.status(400).json({ error: 'Nama pricelist wajib diisi' });
@@ -1736,7 +2176,7 @@ app.get('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner
 });
 
 // PUT /api/pricelists/:id - Ubah nama, keterangan, is_active
-app.put('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+app.put('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner', 'kasir'), async (req, res) => {
   const { id } = req.params;
   const { nama, keterangan, is_active } = req.body;
 
@@ -1776,7 +2216,7 @@ app.put('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner
 });
 
 // DELETE /api/pricelists/:id - Hapus pricelist (R7: tolak 409 jika sedang dipakai customer)
-app.delete('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+app.delete('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner', 'kasir'), async (req, res) => {
   const { id } = req.params;
   try {
     const custRes = await pool.query('SELECT COUNT(*) AS total_customers FROM customers WHERE pricelist_id = ?', [id]);
@@ -1801,7 +2241,7 @@ app.delete('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'ow
 });
 
 // POST /api/pricelists/:id/duplicate - Duplikat pricelist beserta itemnya
-app.post('/api/pricelists/:id/duplicate', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+app.post('/api/pricelists/:id/duplicate', authenticateToken, authorizeRoles('admin', 'owner', 'kasir'), async (req, res) => {
   const { id } = req.params;
   const { nama } = req.body;
 
@@ -1859,7 +2299,7 @@ app.post('/api/pricelists/:id/duplicate', authenticateToken, authorizeRoles('adm
 });
 
 // PUT /api/pricelists/:id/items - Bulk upsert [{ product_id, harga }] (input massal & import CSV)
-app.put('/api/pricelists/:id/items', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+app.put('/api/pricelists/:id/items', authenticateToken, authorizeRoles('admin', 'owner', 'kasir'), async (req, res) => {
   const { id } = req.params;
   const { items } = req.body;
 
@@ -1927,7 +2367,7 @@ app.put('/api/pricelists/:id/items', authenticateToken, authorizeRoles('admin', 
 });
 
 // DELETE /api/pricelists/:id/items/:productId - Hapus satu item dari pricelist
-app.delete('/api/pricelists/:id/items/:productId', authenticateToken, authorizeRoles('admin', 'owner'), async (req, res) => {
+app.delete('/api/pricelists/:id/items/:productId', authenticateToken, authorizeRoles('admin', 'owner', 'kasir'), async (req, res) => {
   const { id, productId } = req.params;
   try {
     const result = await pool.query(
@@ -2076,7 +2516,8 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
     const mapInvoiceRow = (r) => {
       const total = parseFloat(r.total || 0);
       const paid = parseFloat(r.paid_amount || 0);
-      const sisa = Math.max(0, total - paid);
+      const returnAmount = parseFloat(r.return_amount || 0);
+      const sisa = Math.max(0, total - paid - returnAmount);
       const dueDateStr = formatDateStr(r.due_date);
       const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
       return {
@@ -2086,6 +2527,7 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
         customer: r.customer || 'Tanpa Pelanggan',
         total: total,
         paid: paid,
+        returnAmount: returnAmount,
         sisa: sisa,
         isOverdue: isOverdue,
         paidDate: formatDateStr(r.paid_date) || null,
@@ -2394,6 +2836,10 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
         const itemQty = parseFloat(item.quantity ?? item.qty ?? 0);
         const itemPrice = parseFloat(item.price ?? item.sell_price ?? 0);
 
+        const curProd = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [prodId]);
+        const curStock = parseFloat(curProd.rows[0]?.stock || 0);
+        const nextStock = curStock - itemQty;
+
         await client.query(updateStockQuery, [itemQty, prodId]);
         // Also insert to invoice_items — include customer_fee/fee_notes (admin only)
         const itemFee = req.user.role === 'admin' ? (parseFloat(item.customer_fee) || 0) : 0;
@@ -2408,6 +2854,21 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
           'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [Date.now().toString() + Math.floor(Math.random() * 1000), id, prodId, itemQty, itemPrice, costSnapshot, itemFee, itemFeeNotes]
         );
+
+        await recordStockMove(client, {
+          product_id: prodId,
+          tanggal: date ? date + ' 12:00:00' : null,
+          tipe: 'penjualan',
+          ref_type: 'invoice',
+          ref_id: id,
+          ref_no: id,
+          qty_masuk: 0,
+          qty_keluar: itemQty,
+          qty_sebelum: curStock,
+          qty_sesudah: nextStock,
+          keterangan: `Penjualan Invoice ${id}`,
+          created_by: userId
+        });
       }
     }
 
@@ -2804,6 +3265,158 @@ async function recordInvoicePayment({ invoiceId, amount, paymentDate, paymentMet
   }
 }
 
+/**
+ * Record payment for Purchase Order (Hutang Vendor)
+ * - Role: admin / gudang
+ * - Amount > 0, integer (bulat)
+ * - Date <= today
+ * - Row lock FOR UPDATE on purchase_orders
+ * - Dynamic balance calculation from active payments in purchase_order_payments
+ * - Overpayment rejection (amount <= sisa)
+ * - Atomic payment_no generation: POP-YYYY-MM-NNNNN
+ * - Cash transaction creation (type: 'OUT', category: 'Pelunasan Hutang')
+ * - purchase_order_payments insertion
+ * - purchase_orders (paid_amount, status, paid_date) update
+ */
+async function recordPurchaseOrderPayment({ poId, amount, paymentDate, paymentMethod, notes, isDownPayment = 0, userId }) {
+  const numAmount = parseFloat(amount);
+  if (isNaN(numAmount) || numAmount <= 0) {
+    const err = new Error('Nominal pembayaran harus berupa angka lebih besar dari 0');
+    err.status = 400;
+    throw err;
+  }
+  if (!Number.isInteger(numAmount)) {
+    const err = new Error('Nominal pembayaran harus berupa Rupiah bulat tanpa pecahan');
+    err.status = 400;
+    throw err;
+  }
+
+  const todayStr = formatDateStr(new Date());
+  const payDate = paymentDate ? formatDateStr(paymentDate) : todayStr;
+  if (payDate > todayStr) {
+    const err = new Error('Tanggal pembayaran tidak boleh di masa depan');
+    err.status = 400;
+    throw err;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Lock purchase_order row
+    const poRes = await client.query('SELECT * FROM purchase_orders WHERE id = ? FOR UPDATE', [poId]);
+    if (poRes.rows.length === 0) {
+      const err = new Error('Purchase Order tidak ditemukan');
+      err.status = 404;
+      throw err;
+    }
+    const po = poRes.rows[0];
+
+    if (po.status === 'Batal' || po.status === 'Cancel') {
+      const err = new Error('Purchase Order yang sudah dibatalkan tidak dapat menerima pembayaran');
+      err.status = 400;
+      throw err;
+    }
+
+    const total = parseFloat(po.total || 0);
+    const returnAmount = parseFloat(po.return_amount || 0);
+
+    // 2. Lock & calculate active payments from purchase_order_payments
+    const payRes = await client.query(
+      'SELECT id, amount FROM purchase_order_payments WHERE purchase_order_id = ? AND status = ? FOR UPDATE',
+      [poId, 'active']
+    );
+
+    let currentTotalPaid = 0;
+    if (payRes.rows.length > 0) {
+      currentTotalPaid = payRes.rows.reduce((sum, r) => sum + parseFloat(r.amount), 0);
+    } else {
+      currentTotalPaid = parseFloat(po.paid_amount || 0);
+    }
+
+    const sisa = Math.max(0, total - returnAmount - currentTotalPaid);
+
+    if (sisa <= 0) {
+      const err = new Error('Hutang PO ini sudah lunas, tidak ada sisa tagihan');
+      err.status = 400;
+      throw err;
+    }
+
+    if (numAmount > sisa) {
+      const err = new Error(`Pembayaran melebihi sisa hutang! Sisa hutang: Rp ${Math.round(sisa).toLocaleString('id-ID')}, nominal bayar: Rp ${Math.round(numAmount).toLocaleString('id-ID')}`);
+      err.status = 400;
+      throw err;
+    }
+
+    // 3. Generate atomic payment reference number: POP-YYYY-MM-NNNNN
+    const paymentNo = await generatePurchasePaymentNo(client, payDate);
+
+    // 4. Create cash transaction OUT
+    const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
+    const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
+    const ctCategory = 'Pelunasan Hutang';
+    const ctDesc = isDownPayment
+      ? `Uang Muka (DP) PO ${poId} (${paymentNo})`
+      : `Pembayaran Cicilan PO ${poId} (${paymentNo})`;
+    const methodStr = paymentMethod || 'Transfer Bank';
+
+    await client.query(
+      `INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, user_id, status)
+       VALUES (?, ?, 'OUT', ?, ?, ?, ?, ?, ?, 'active')`,
+      [ctId, payDate, ctCategory, ctDesc, numAmount, methodStr, poId, userId]
+    );
+
+    // 5. Insert to purchase_order_payments
+    const insertRes = await client.query(
+      `INSERT INTO purchase_order_payments
+       (payment_no, purchase_order_id, payment_date, amount, payment_method, notes, is_down_payment, status, cash_transaction_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      [paymentNo, poId, payDate, numAmount, methodStr, notes || null, isDownPayment ? 1 : 0, ctId, userId]
+    );
+
+    // 6. Recalculate totals and update purchase_orders
+    const newTotalPaid = currentTotalPaid + numAmount;
+    const newSisa = Math.max(0, total - returnAmount - newTotalPaid);
+    const newStatus = newSisa <= 0 ? 'Selesai' : 'Dalam Proses';
+    const newPaidDate = newStatus === 'Selesai' ? payDate : null;
+
+    await client.query(
+      'UPDATE purchase_orders SET paid_amount = ?, status = ?, paid_date = ? WHERE id = ?',
+      [newTotalPaid, newStatus, newPaidDate, poId]
+    );
+
+    await client.query('COMMIT');
+
+    return {
+      payment: {
+        id: insertRes.insertId,
+        payment_no: paymentNo,
+        purchase_order_id: poId,
+        payment_date: payDate,
+        amount: numAmount,
+        payment_method: methodStr,
+        notes: notes || null,
+        is_down_payment: Boolean(isDownPayment),
+        cash_transaction_id: ctId
+      },
+      purchase: {
+        id: poId,
+        total: total,
+        return_amount: returnAmount,
+        paid_amount: newTotalPaid,
+        sisa: newSisa,
+        status: newStatus,
+        paid_date: newPaidDate
+      }
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 app.get('/api/finance/receivables', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
   try {
     const { page, limit: limitQ, q, search, customer_id, status, paginate, all } = req.query;
@@ -2862,7 +3475,8 @@ app.get('/api/finance/receivables', authenticateToken, authorizeRoles('admin', '
     const mapReceivableRow = (r) => {
       const total = parseFloat(r.total || 0);
       const paid = parseFloat(r.paid_amount || 0);
-      const sisa = Math.max(0, total - paid);
+      const returnAmount = parseFloat(r.return_amount || 0);
+      const sisa = Math.max(0, total - paid - returnAmount);
       const dueDateStr = formatDateStr(r.due_date);
       const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
 
@@ -2875,6 +3489,7 @@ app.get('/api/finance/receivables', authenticateToken, authorizeRoles('admin', '
         customerPhone: r.customer_phone || '-',
         total: total,
         paid: paid,
+        returnAmount: returnAmount,
         sisa: sisa,
         type: r.payment_type_name || 'Kredit',
         status: r.status,
@@ -3000,7 +3615,7 @@ app.delete('/api/finance/receivables/:id', authenticateToken, authorizeRoles('ad
     if (!inv.is_outstanding_import || itemCount > 0) {
       await client.query('ROLLBACK');
       return res.status(403).json({
-        error: 'Akses ditolak: Hanya invoice yang berasal dari Input/Import Outstanding yang dapat dihapus.'
+        error: 'Akses ditolak: Hanya invoice yang berasal dari Input/Import Outstanding yang dapat dihapus. Piutang dari transaksi penjualan tidak dapat dihapus.'
       });
     }
 
@@ -3495,6 +4110,7 @@ pool.query(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS status VARCHA
     await pool.query(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS paid_date DATE DEFAULT NULL`);
     await pool.query(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS is_outstanding_import TINYINT(1) NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS paid_date DATE DEFAULT NULL`);
+    await pool.query(`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS is_outstanding_import TINYINT(1) NOT NULL DEFAULT 0`);
     console.log('[Migration] sales_invoices & purchase_orders: paid_date & is_outstanding_import column ensured');
 
     // Auto-migrasi field baru tabel customers
@@ -3540,6 +4156,42 @@ pool.query(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS status VARCHA
     `);
     await pool.query("INSERT IGNORE INTO settings (`key`, value) VALUES ('prefix_payment', 'PAY-{YYYY}-{MM}-')");
     console.log('[Migration] sales_invoice_payments & payment_counters tables ensured');
+
+    // Auto-migrasi tabel pembayaran cicilan PO & counter
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS purchase_payment_counters (
+        year INT NOT NULL PRIMARY KEY,
+        last_number INT NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS purchase_order_payments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        payment_no VARCHAR(50) UNIQUE NOT NULL,
+        purchase_order_id VARCHAR(255) NOT NULL,
+        payment_date DATE NOT NULL,
+        amount DECIMAL(20,4) NOT NULL,
+        payment_method VARCHAR(50) NOT NULL,
+        notes TEXT DEFAULT NULL,
+        is_down_payment TINYINT(1) DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'active',
+        void_reason TEXT DEFAULT NULL,
+        void_by INT DEFAULT NULL,
+        void_at DATETIME DEFAULT NULL,
+        cash_transaction_id VARCHAR(255) DEFAULT NULL,
+        created_by INT DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_po_id (purchase_order_id),
+        INDEX idx_payment_date (payment_date),
+        INDEX idx_status (status),
+        FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+        FOREIGN KEY (void_by) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (cash_transaction_id) REFERENCES cash_transactions(id) ON DELETE SET NULL,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+    await pool.query("INSERT IGNORE INTO settings (`key`, value) VALUES ('prefix_purchase_payment', 'POP-{YYYY}-{MM}-')");
+    console.log('[Migration] purchase_order_payments & purchase_payment_counters tables ensured');
   } catch (err) {
     console.error('[Migration] Failed to execute migrations:', err.message);
   }
@@ -3767,10 +4419,30 @@ app.patch('/api/finance/cash-flow/:id/cancel', authenticateToken, authorizeRoles
         const diff = newStock - oldStock; // Positive if stock increased, negative if decreased
 
         // Reverse the diff: subtract it from the current stock
+        const curProd = await client.query('SELECT stock FROM products WHERE ' + (productId ? 'id = ?' : 'name = ?') + ' FOR UPDATE', [productId || productName]);
+        const curStock = parseFloat(curProd.rows[0]?.stock || 0);
+        const nextStock = curStock - diff;
+
         if (productId) {
           await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [diff, productId]);
         } else {
           await client.query('UPDATE products SET stock = stock - $1 WHERE name = $2', [diff, productName]);
+        }
+
+        if (productId) {
+          await recordStockMove(client, {
+            product_id: productId,
+            tipe: 'opname',
+            ref_type: 'cash_transaction',
+            ref_id: id,
+            ref_no: id,
+            qty_masuk: diff < 0 ? Math.abs(diff) : 0,
+            qty_keluar: diff > 0 ? diff : 0,
+            qty_sebelum: curStock,
+            qty_sesudah: nextStock,
+            keterangan: `Pembatalan Opname Kas: ${id}`,
+            created_by: req.user.id
+          });
         }
       }
     }
@@ -4187,10 +4859,11 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
   }
 });
 
-app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
   try {
     const { page, limit: limitQ, q, search, vendor_id, status, paginate, all } = req.query;
     const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+    const todayStr = formatDateStr(new Date());
 
     const whereConditions = ["po.status != 'Batal'"];
     const params = [];
@@ -4210,11 +4883,13 @@ app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'fin
     if (status && status !== 'all') {
       const qStatus = status.toLowerCase();
       if (qStatus === 'lunas') {
-        whereConditions.push('po.paid_amount >= po.total');
+        whereConditions.push('(po.total - po.paid_amount - COALESCE(po.return_amount, 0)) <= 0');
+      } else if (qStatus === 'overdue') {
+        whereConditions.push('(po.total - po.paid_amount - COALESCE(po.return_amount, 0)) > 0 AND po.due_date IS NOT NULL AND po.due_date < CURDATE()');
       } else if (qStatus.includes('belum')) {
-        whereConditions.push('po.paid_amount = 0');
+        whereConditions.push('po.paid_amount = 0 AND (po.total - COALESCE(po.return_amount, 0)) > 0');
       } else if (qStatus === 'sebagian') {
-        whereConditions.push('po.paid_amount > 0 AND po.paid_amount < po.total');
+        whereConditions.push('po.paid_amount > 0 AND (po.total - po.paid_amount - COALESCE(po.return_amount, 0)) > 0');
       }
     }
 
@@ -4223,19 +4898,25 @@ app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'fin
     const mapPayableRow = (r) => {
       const total = parseFloat(r.total || 0);
       const paid = parseFloat(r.paid_amount || 0);
-      const sisa = Math.max(0, total - paid);
+      const returnAmount = parseFloat(r.return_amount || 0);
+      const sisa = Math.max(0, total - returnAmount - paid);
+      const dueDateStr = formatDateStr(r.due_date);
+      const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
       return {
         id: r.id,
         date: formatDateStr(r.date),
-        dueDate: formatDateStr(r.due_date) || formatDateStr(r.date) || '-',
+        dueDate: dueDateStr || formatDateStr(r.date) || '-',
         paidDate: formatDateStr(r.paid_date) || null,
         vendorId: r.vendor_id,
         vendor: r.vendor_name || 'Tanpa Vendor',
         total: total,
         paid: paid,
+        returnAmount: returnAmount,
         sisa: sisa,
-        type: r.payment_type_name || 'Tunai',
-        status: sisa > 0 ? 'Belum Lunas' : 'Lunas'
+        type: r.payment_type_name || 'Tempo',
+        status: sisa > 0 ? (paid > 0 ? 'Sebagian' : 'Belum Lunas') : 'Lunas',
+        isOverdue: isOverdue,
+        isOutstandingImport: Boolean(r.is_outstanding_import)
       };
     };
 
@@ -4247,8 +4928,9 @@ app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'fin
       // Summary query over all vendors & debts
       const summarySql = `
         SELECT 
-          COALESCE(SUM(GREATEST(po.total - po.paid_amount, 0)), 0) AS total_debt,
-          COUNT(DISTINCT CASE WHEN (po.total - po.paid_amount) > 0 THEN po.vendor_id END) AS vendors_with_debt,
+          COALESCE(SUM(GREATEST(po.total - po.paid_amount - COALESCE(po.return_amount, 0), 0)), 0) AS total_debt,
+          COUNT(DISTINCT CASE WHEN (po.total - po.paid_amount - COALESCE(po.return_amount, 0)) > 0 THEN po.vendor_id END) AS vendors_with_debt,
+          COUNT(CASE WHEN (po.total - po.paid_amount - COALESCE(po.return_amount, 0)) > 0 AND po.due_date IS NOT NULL AND po.due_date < CURDATE() THEN 1 END) AS overdue_count,
           (SELECT COUNT(*) FROM vendors) AS total_vendors
         FROM purchase_orders po
         WHERE po.status != 'Batal'
@@ -4258,6 +4940,7 @@ app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'fin
       const totalVendors = parseInt(sumRow.total_vendors || 0);
       const vendorsWithDebt = parseInt(sumRow.vendors_with_debt || 0);
       const vendorsLunas = Math.max(0, totalVendors - vendorsWithDebt);
+      const overdueCount = parseInt(sumRow.overdue_count || 0);
 
       const countSql = `
         SELECT COUNT(*) AS total 
@@ -4291,9 +4974,11 @@ app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'fin
           totalDebt: parseFloat(sumRow.total_debt || 0),
           vendorsWithDebt,
           vendorsLunas,
+          overdueCount,
           total_debt: parseFloat(sumRow.total_debt || 0),
           vendors_with_debt: vendorsWithDebt,
-          vendors_lunas: vendorsLunas
+          vendors_lunas: vendorsLunas,
+          overdue_count: overdueCount
         }
       });
     }
@@ -4312,55 +4997,701 @@ app.get('/api/finance/payables', authenticateToken, authorizeRoles('admin', 'fin
   }
 });
 
-// Pay vendor PO debt
-app.post('/api/finance/payables/:id/pay', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
+// Pay vendor PO debt (Cicilan Bertahap)
+app.post('/api/purchase-orders/:id/payments', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  try {
+    const result = await recordPurchaseOrderPayment({
+      poId: req.params.id,
+      amount: req.body.amount,
+      paymentDate: req.body.date || req.body.payment_date,
+      paymentMethod: req.body.method || req.body.payment_method || req.body.payment_type_id || 'Transfer Bank',
+      notes: req.body.notes,
+      isDownPayment: 0,
+      userId: req.user.id
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const statusCode = err.status || 500;
+    res.status(statusCode).json({ error: err.message });
+  }
+});
+
+// Backward-compatible alias for existing callers
+app.post('/api/finance/payables/:id/pay', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  try {
+    const result = await recordPurchaseOrderPayment({
+      poId: req.params.id,
+      amount: req.body.amount,
+      paymentDate: req.body.date || req.body.payment_date,
+      paymentMethod: req.body.payment_type_id || req.body.method || 'Transfer Bank',
+      notes: req.body.notes,
+      isDownPayment: 0,
+      userId: req.user.id
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    const statusCode = err.status || 500;
+    res.status(statusCode).json({ error: err.message });
+  }
+});
+
+// Get PO payments history
+app.get('/api/purchase-orders/:id/payments', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
   const { id } = req.params;
-  const { amount } = req.body;
-  const payAmount = parseFloat(amount || 0);
+  try {
+    const poRes = await pool.query(`
+      SELECT po.*, v.name as vendor_name, pt.name as payment_type_name
+      FROM purchase_orders po
+      LEFT JOIN vendors v ON po.vendor_id = v.id
+      LEFT JOIN payment_types pt ON po.payment_type_id = pt.id
+      WHERE po.id = ?
+    `, [id]);
+
+    if (poRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Purchase Order tidak ditemukan' });
+    }
+    const po = poRes.rows[0];
+
+    const payRes = await pool.query(`
+      SELECT pop.*, u.name as created_by_name, vu.name as void_by_name
+      FROM purchase_order_payments pop
+      LEFT JOIN users u ON pop.created_by = u.id
+      LEFT JOIN users vu ON pop.void_by = vu.id
+      WHERE pop.purchase_order_id = ?
+      ORDER BY pop.id ASC
+    `, [id]);
+
+    const todayStr = formatDateStr(new Date());
+    const total = parseFloat(po.total || 0);
+    const returnAmount = parseFloat(po.return_amount || 0);
+    const activePayments = payRes.rows.filter(p => p.status === 'active');
+    const totalPaidFromPayments = activePayments.reduce((s, p) => s + parseFloat(p.amount), 0);
+    const totalPaid = payRes.rows.length > 0 ? totalPaidFromPayments : parseFloat(po.paid_amount || 0);
+    const sisa = Math.max(0, total - returnAmount - totalPaid);
+    const dueDateStr = formatDateStr(po.due_date);
+    const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
+
+    res.json({
+      purchase: {
+        id: po.id,
+        date: formatDateStr(po.date),
+        dueDate: dueDateStr,
+        vendor: po.vendor_name || 'Tanpa Vendor',
+        type: po.payment_type_name || 'Tempo',
+        total: total,
+        returnAmount: returnAmount,
+        paid: totalPaid,
+        sisa: sisa,
+        status: po.status,
+        isOverdue: isOverdue,
+        paidDate: formatDateStr(po.paid_date) || null,
+        isOutstandingImport: Boolean(po.is_outstanding_import)
+      },
+      payments: payRes.rows.map(p => ({
+        id: p.id,
+        paymentNo: p.payment_no,
+        date: formatDateStr(p.payment_date),
+        amount: parseFloat(p.amount),
+        method: p.payment_method,
+        notes: p.notes || '',
+        isDownPayment: Boolean(p.is_down_payment),
+        status: p.status,
+        voidReason: p.void_reason || null,
+        voidBy: p.void_by_name || null,
+        voidAt: p.void_at ? (typeof p.void_at === 'string' ? p.void_at : p.void_at.toISOString()) : null,
+        createdBy: p.created_by_name || 'Staff'
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Void Purchase Order Payment Endpoint
+const handleVoidPurchasePayment = async (req, res) => {
+  const paymentId = req.params.paymentId;
+  const reason = (req.body.reason || req.body.void_reason || '').trim();
+
+  if (!reason) {
+    return res.status(400).json({ error: 'Alasan pembatalan (void) wajib diisi' });
+  }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query('SELECT * FROM purchase_orders WHERE id = $1', [id]);
-    const po = result.rows[0];
-    if (!po) {
+
+    // 1. Find and lock the payment record
+    const isNum = !isNaN(parseInt(paymentId, 10)) && /^\d+$/.test(paymentId);
+    let payQuery = 'SELECT * FROM purchase_order_payments WHERE ';
+    const payParams = isNum ? [parseInt(paymentId, 10)] : [paymentId];
+    payQuery += isNum ? 'id = ? FOR UPDATE' : 'payment_no = ? FOR UPDATE';
+
+    const payRes = await client.query(payQuery, payParams);
+    if (payRes.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'PO tidak ditemukan' });
+      return res.status(404).json({ error: 'Data pembayaran hutang tidak ditemukan' });
+    }
+    const payment = payRes.rows[0];
+
+    if (payment.status === 'void') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Pembayaran ini sudah dibatalkan (void) sebelumnya' });
     }
 
-    const pType = req.body.payment_type_id || po.payment_type_id;
-    const ptRes = await client.query(
-      'SELECT name FROM payment_types WHERE id = $1',
-      [pType]
+    const poId = payment.purchase_order_id;
+
+    // 2. Lock the associated purchase order
+    const poRes = await client.query('SELECT * FROM purchase_orders WHERE id = ? FOR UPDATE', [poId]);
+    if (poRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'PO terkait tidak ditemukan' });
+    }
+    const po = poRes.rows[0];
+
+    // 3. Mark payment as void
+    await client.query(
+      `UPDATE purchase_order_payments 
+       SET status = 'void', void_reason = ?, void_by = ?, void_at = NOW() 
+       WHERE id = ?`,
+      [reason, req.user.id, payment.id]
     );
-    const payMethodStr = ptRes.rows[0]?.name || 'Transfer Bank';
 
-    const currentPaid = parseFloat(po.paid_amount || 0);
-    const total = parseFloat(po.total || 0);
-    const newPaid = currentPaid + payAmount;
-    const newStatus = newPaid >= total ? 'Selesai' : 'Dalam Proses';
-    const paidDate = newStatus === 'Selesai' ? new Date().toISOString().split('T')[0] : null;
-
-    if (paidDate) {
-      await client.query('UPDATE purchase_orders SET paid_amount = $1, status = $2, paid_date = $3 WHERE id = $4', [newPaid, newStatus, paidDate, id]);
-    } else {
-      await client.query('UPDATE purchase_orders SET paid_amount = $1, status = $2 WHERE id = $3', [newPaid, newStatus, id]);
+    // 4. Reversal cash transaction (mark status as 'cancelled')
+    if (payment.cash_transaction_id) {
+      await client.query(
+        `UPDATE cash_transactions 
+         SET status = 'cancelled' 
+         WHERE id = ?`,
+        [payment.cash_transaction_id]
+      );
     }
 
-    // Log cash transaction OUT
-    const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
-    const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-    const date = new Date().toISOString().split('T')[0];
-    const userId = req.user.id;
-    await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [ctId, date, 'OUT', 'Pembelian Stok', `Pelunasan ${id}`, payAmount, payMethodStr, id, userId]);
+    // 5. Recalculate PO totals from all remaining active payments
+    const activePayRes = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) as total_active, MAX(payment_date) as last_date, COUNT(*) as count 
+       FROM purchase_order_payments 
+       WHERE purchase_order_id = ? AND status = 'active'`,
+      [poId]
+    );
+    const totalActivePaid = parseFloat(activePayRes.rows[0].total_active || 0);
+    const poTotal = parseFloat(po.total || 0);
+    const returnAmount = parseFloat(po.return_amount || 0);
+    const newSisa = Math.max(0, poTotal - returnAmount - totalActivePaid);
+    const newStatus = newSisa <= 0 ? 'Selesai' : 'Dalam Proses';
+    const newPaidDate = newStatus === 'Selesai' ? activePayRes.rows[0].last_date : null;
+
+    await client.query(
+      `UPDATE purchase_orders 
+       SET paid_amount = ?, status = ?, paid_date = ? 
+       WHERE id = ?`,
+      [totalActivePaid, newStatus, newPaidDate, poId]
+    );
 
     await client.query('COMMIT');
-    res.json({ success: true });
+
+    res.json({
+      success: true,
+      message: 'Pembayaran hutang berhasil dibatalkan (void)',
+      payment: {
+        id: payment.id,
+        payment_no: payment.payment_no,
+        purchase_order_id: poId,
+        amount: parseFloat(payment.amount),
+        status: 'void',
+        void_reason: reason,
+        void_by: req.user.id
+      },
+      purchase: {
+        id: poId,
+        total: poTotal,
+        return_amount: returnAmount,
+        paid_amount: totalActivePaid,
+        sisa: newSisa,
+        status: newStatus,
+        paid_date: newPaidDate ? formatDateStr(newPaidDate) : null
+      }
+    });
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('[Void Purchase Payment Error]:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
+  }
+};
+
+app.post('/api/purchase-orders/payments/:paymentId/void', authenticateToken, authorizeRoles('admin', 'gudang'), handleVoidPurchasePayment);
+app.post('/api/purchase-orders/:id/payments/:paymentId/void', authenticateToken, authorizeRoles('admin', 'gudang'), handleVoidPurchasePayment);
+
+/**
+ * DELETE /api/finance/payables/:id
+ * Hapus PO hutang khusus yang berasal dari fitur Import Outstanding.
+ * Hak akses: Administrator dan Gudang
+ */
+app.delete('/api/finance/payables/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  const poId = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Lock baris PO
+    const poRes = await client.query('SELECT * FROM purchase_orders WHERE id = ? FOR UPDATE', [poId]);
+    if (poRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Purchase Order tidak ditemukan' });
+    }
+    const po = poRes.rows[0];
+
+    // 2. Validasi ketat: Hanya hutang import/manual outstanding yang boleh dihapus
+    const itemsCheck = await client.query('SELECT COUNT(*) as count FROM purchase_order_items WHERE purchase_order_id = ?', [poId]);
+    const itemCount = parseInt(itemsCheck.rows[0]?.count || 0);
+
+    if (!po.is_outstanding_import || itemCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: 'Akses ditolak: Hanya hutang yang berasal dari Input/Import Outstanding yang dapat dihapus. Hutang dari transaksi Purchase Order tidak dapat dihapus.'
+      });
+    }
+
+    // 3. Batalkan arus kas dan hapus data cicilan terkait secara transaksional
+    await client.query(
+      `UPDATE cash_transactions SET status = 'cancelled' WHERE purchase_order_id = ? AND (status IS NULL OR status = 'active')`,
+      [poId]
+    );
+
+    await client.query('DELETE FROM purchase_order_payments WHERE purchase_order_id = ?', [poId]);
+
+    // 4. Hapus purchase_orders
+    await client.query('DELETE FROM purchase_orders WHERE id = ?', [poId]);
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Hutang outstanding berhasil dihapus' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[Delete Outstanding Payable Error]:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Alias for outstanding purchase order deletion
+app.delete('/api/purchase-orders/outstanding/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  req.url = `/api/finance/payables/${req.params.id}`;
+  app.handle(req, res);
+});
+
+/**
+ * POST /api/purchase-orders/import-outstanding
+ * Import batch hutang PO outstanding (migrasi saldo hutang sistem lama).
+ * Hak akses: Administrator dan Gudang
+ */
+app.post('/api/purchase-orders/import-outstanding', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  const purchases = req.body.purchase_orders || req.body.purchases || req.body.invoices || req.body.items;
+  if (!Array.isArray(purchases) || purchases.length === 0) {
+    return res.status(400).json({ error: 'Data hutang untuk diimpor tidak boleh kosong' });
+  }
+
+  const userId = req.user.id;
+  const todayStr = formatDateStr(new Date());
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Ambil seluruh payment types
+    const ptRes = await client.query('SELECT id, name FROM payment_types');
+    const paymentTypes = ptRes.rows;
+    const ptMap = {};
+    paymentTypes.forEach(p => {
+      ptMap[p.name.toLowerCase().trim()] = p.id;
+      ptMap[p.id.toLowerCase().trim()] = p.id;
+    });
+
+    // Default payment type: Tempo / Kredit 30 Hari
+    const defaultCreditType = paymentTypes.find(p => p.name.toLowerCase().includes('tempo'))?.id
+      || paymentTypes.find(p => p.name.toLowerCase().includes('kredit 30'))?.id
+      || paymentTypes.find(p => p.name.toLowerCase().startsWith('kredit'))?.id
+      || 'PT-7';
+
+    // 2. Ambil seluruh vendor untuk validasi
+    const vendRes = await client.query('SELECT id, name FROM vendors');
+    const vendMapByName = {};
+    const vendMapById = {};
+    vendRes.rows.forEach(v => {
+      vendMapByName[v.name.toLowerCase().trim()] = v.id;
+      vendMapById[v.id.toLowerCase().trim()] = v.id;
+    });
+
+    const seenIds = new Set();
+    const createdPurchases = [];
+
+    for (let i = 0; i < purchases.length; i++) {
+      const p = purchases[i];
+      const rowNum = p.row_number || (i + 1);
+
+      // A. Validasi Vendor
+      const rawVend = String(p.vendor_id || p.vendor_name || p.vendor || '').trim();
+      if (!rawVend) {
+        throw new Error(`Baris ${rowNum}: Nama vendor wajib diisi`);
+      }
+      const vendorId = vendMapById[rawVend.toLowerCase()] || vendMapByName[rawVend.toLowerCase()];
+      if (!vendorId) {
+        throw new Error(`Baris ${rowNum}: Vendor "${rawVend}" tidak ditemukan di database`);
+      }
+
+      // B. Tanggal PO
+      let poDate = p.date ? formatDateStr(p.date) : todayStr;
+      if (!poDate || isNaN(new Date(poDate).getTime())) {
+        poDate = todayStr;
+      }
+
+      // C. Validasi Total & Total Dibayar
+      const total = parseFloat(p.total);
+      if (isNaN(total) || total <= 0) {
+        throw new Error(`Baris ${rowNum}: Total tagihan harus berupa angka lebih besar dari 0`);
+      }
+
+      const totalDibayar = parseFloat(p.total_dibayar ?? p.paid ?? 0);
+      if (isNaN(totalDibayar) || totalDibayar < 0) {
+        throw new Error(`Baris ${rowNum}: Total dibayar tidak boleh bernilai negatif`);
+      }
+
+      if (totalDibayar >= total) {
+        if (totalDibayar === total) {
+          throw new Error(`Baris ${rowNum}: Total dibayar sama dengan total hutang (Rp ${Math.round(total).toLocaleString('id-ID')}). Hutang ini bukan outstanding karena sudah lunas.`);
+        } else {
+          throw new Error(`Baris ${rowNum}: Total dibayar (Rp ${Math.round(totalDibayar).toLocaleString('id-ID')}) melebihi total hutang (Rp ${Math.round(total).toLocaleString('id-ID')}). Pembayaran tidak boleh melebihi nilai tagihan.`);
+        }
+      }
+
+      // D. Tipe Pembayaran
+      let pTypeId = defaultCreditType;
+      const rawPt = String(p.payment_type || p.payment_type_id || '').toLowerCase().trim();
+      if (rawPt && ptMap[rawPt]) {
+        pTypeId = ptMap[rawPt];
+      }
+
+      // E. Tanggal Jatuh Tempo
+      let dueDate = p.due_date ? formatDateStr(p.due_date) : null;
+      if (!dueDate) {
+        let tenorDays = 30;
+        if (pTypeId === 'PT-3') tenorDays = 1;
+        else if (pTypeId === 'PT-5') tenorDays = 7;
+        else if (pTypeId === 'PT-6') tenorDays = 14;
+        const dObj = new Date(poDate);
+        dObj.setDate(dObj.getDate() + tenorDays);
+        dueDate = formatDateStr(dObj);
+      }
+
+      // F. Nomor PO (manual jika diisi, atomic counter jika kosong)
+      let poId = p.id ? String(p.id).trim() : '';
+      if (poId) {
+        if (seenIds.has(poId.toLowerCase())) {
+          throw new Error(`Baris ${rowNum}: Nomor PO "${poId}" duplikat di dalam file import ini`);
+        }
+        const existingPo = await client.query('SELECT id FROM purchase_orders WHERE id = ?', [poId]);
+        if (existingPo.rows.length > 0) {
+          throw new Error(`Baris ${rowNum}: Nomor PO "${poId}" sudah ada di database`);
+        }
+        seenIds.add(poId.toLowerCase());
+      } else {
+        const prefix = await getSetting('prefix_purchase', 'PO-{YYYY}-{MM}-');
+        poId = await generateNextId(client, 'purchase_orders', prefix);
+        seenIds.add(poId.toLowerCase());
+      }
+
+      // G. Hitung sisa hutang & status
+      const sisa = Math.max(0, total - totalDibayar);
+      const status = totalDibayar > 0 ? 'Dalam Proses' : 'Dalam Proses';
+
+      // H. Simpan purchase_orders
+      await client.query(
+        `INSERT INTO purchase_orders 
+         (id, date, vendor_id, subtotal, discount, tax, total, paid_amount, return_amount, payment_type_id, due_date, paid_date, status, user_id, is_outstanding_import) 
+         VALUES (?, ?, ?, ?, 0, 0, ?, ?, 0, ?, ?, NULL, ?, ?, 1)`,
+        [poId, poDate, vendorId, total, total, totalDibayar, pTypeId, dueDate, status, userId]
+      );
+
+      // I. Jika total_dibayar > 0, buat 1 record di purchase_order_payments sebagai saldo awal
+      if (totalDibayar > 0) {
+        let lastPaymentDate = p.last_payment_date || p.tanggal_pembayaran_terakhir;
+        lastPaymentDate = lastPaymentDate ? formatDateStr(lastPaymentDate) : poDate;
+        if (!lastPaymentDate || isNaN(new Date(lastPaymentDate).getTime())) {
+          lastPaymentDate = poDate;
+        }
+        if (lastPaymentDate > todayStr) {
+          throw new Error(`Baris ${rowNum}: Tanggal pembayaran terakhir tidak boleh di masa depan`);
+        }
+
+        const paymentNo = await generatePurchasePaymentNo(client, lastPaymentDate);
+        await client.query(
+          `INSERT INTO purchase_order_payments
+           (payment_no, purchase_order_id, payment_date, amount, payment_method, notes, is_down_payment, status, cash_transaction_id, created_by)
+           VALUES (?, ?, ?, ?, 'Saldo Awal', 'Saldo awal hasil import', 0, 'active', NULL, ?)`,
+          [paymentNo, poId, lastPaymentDate, totalDibayar, userId]
+        );
+      }
+
+      createdPurchases.push({
+        id: poId,
+        vendor_id: vendorId,
+        total,
+        total_dibayar: totalDibayar,
+        sisa,
+        status,
+        due_date: dueDate
+      });
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: `${createdPurchases.length} hutang outstanding berhasil diimpor`,
+      count: createdPurchases.length,
+      purchases: createdPurchases
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[Import Outstanding PO API] Error rollback:', err.message);
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * POST /api/finance/payables/export-pdf
+ * Export PDF laporan hutang untuk baris PO terpilih.
+ * Hak akses: Administrator dan Gudang
+ */
+app.post('/api/finance/payables/export-pdf', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Daftar PO hutang untuk di-export tidak boleh kosong' });
+  }
+
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    const sql = `
+      SELECT po.id, po.date, po.due_date, po.total, po.paid_amount, po.return_amount, po.status,
+             v.name AS vendor_name, v.phone AS vendor_phone
+      FROM purchase_orders po
+      LEFT JOIN vendors v ON po.vendor_id = v.id
+      WHERE po.id IN (${placeholders}) AND po.status != 'Batal'
+      ORDER BY v.name ASC, po.date ASC, po.id ASC
+    `;
+    const poRes = await pool.query(sql, ids);
+    if (poRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Tidak ada data hutang valid yang ditemukan untuk dicetak' });
+    }
+
+    const companyRes = await pool.query("SELECT value FROM settings WHERE `key` = 'company_name'");
+    const companyName = companyRes.rows[0]?.value || 'SupplierPro';
+
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: 'landscape',
+      margins: { top: 36, bottom: 36, left: 36, right: 36 },
+      bufferPages: true
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="laporan_hutang.pdf"');
+    doc.pipe(res);
+
+    const formatRp = (num) => 'Rp ' + Math.round(parseFloat(num) || 0).toLocaleString('id-ID');
+    const formatDate = (dateStr) => {
+      if (!dateStr) return '-';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return String(dateStr).split('T')[0];
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      return `${day}/${month}/${year}`;
+    };
+
+    const printDate = new Date().toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    });
+
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const margin = 36;
+    const contentWidth = pageWidth - (margin * 2);
+
+    const cols = [
+      { id: 'vendor', label: 'Nama Vendor', width: 170, align: 'left' },
+      { id: 'po_id', label: 'No. PO', width: 115, align: 'left' },
+      { id: 'date', label: 'Tgl PO', width: 80, align: 'center' },
+      { id: 'due_date', label: 'Jatuh Tempo', width: 80, align: 'center' },
+      { id: 'total', label: 'Total Hutang', width: 110, align: 'right' },
+      { id: 'paid', label: 'Sudah Dibayar', width: 105, align: 'right' },
+      { id: 'sisa', label: 'Sisa Hutang', width: 105, align: 'right' }
+    ];
+
+    let currentY = 36;
+
+    function renderHeader() {
+      doc.save();
+      doc.font('Helvetica-Bold').fontSize(16).fillColor('#1e293b')
+        .text('LAPORAN HUTANG USAHA', margin, currentY, { align: 'left' });
+
+      doc.font('Helvetica').fontSize(10).fillColor('#64748b')
+        .text(`Unit Usaha: ${companyName}`, margin, currentY + 20, { align: 'left' });
+
+      doc.fontSize(9).fillColor('#64748b')
+        .text(`Tanggal Cetak: ${printDate}`, margin, currentY + 20, { align: 'right', width: contentWidth });
+
+      currentY += 40;
+
+      doc.rect(margin, currentY, contentWidth, 24).fill('#f1f5f9');
+      doc.rect(margin, currentY, contentWidth, 24).stroke('#cbd5e1');
+
+      doc.font('Helvetica-Bold').fontSize(9).fillColor('#334155');
+      let curX = margin;
+      cols.forEach(col => {
+        doc.text(col.label, curX + 4, currentY + 7, { width: col.width - 8, align: col.align });
+        curX += col.width;
+      });
+
+      currentY += 24;
+      doc.restore();
+    }
+
+    renderHeader();
+
+    const grouped = {};
+    poRes.rows.forEach(r => {
+      const vend = r.vendor_name || 'Tanpa Vendor';
+      if (!grouped[vend]) grouped[vend] = [];
+      grouped[vend].push(r);
+    });
+
+    const isMultiVendor = Object.keys(grouped).length > 1;
+    let grandTotal = 0;
+    let grandPaid = 0;
+    let grandSisa = 0;
+    const rowHeight = 20;
+
+    for (const vendName of Object.keys(grouped)) {
+      const items = grouped[vendName];
+      let subTotal = 0;
+      let subPaid = 0;
+      let subSisa = 0;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const tot = parseFloat(item.total) || 0;
+        const pd = parseFloat(item.paid_amount) || 0;
+        const ret = parseFloat(item.return_amount) || 0;
+        const rem = Math.max(0, tot - ret - pd);
+
+        subTotal += tot;
+        subPaid += pd;
+        subSisa += rem;
+
+        grandTotal += tot;
+        grandPaid += pd;
+        grandSisa += rem;
+
+        if (currentY + rowHeight > pageHeight - 50) {
+          doc.addPage();
+          currentY = 36;
+          renderHeader();
+        }
+
+        if (i % 2 === 1) {
+          doc.rect(margin, currentY, contentWidth, rowHeight).fill('#f8fafc');
+        }
+        doc.moveTo(margin, currentY + rowHeight).lineTo(margin + contentWidth, currentY + rowHeight).strokeColor('#e2e8f0').stroke();
+
+        doc.font('Helvetica').fontSize(8.5).fillColor('#1e293b');
+        let curX = margin;
+
+        doc.text(vendName, curX + 4, currentY + 5, { width: cols[0].width - 8, align: cols[0].align, lineBreak: false });
+        curX += cols[0].width;
+
+        doc.text(String(item.id), curX + 4, currentY + 5, { width: cols[1].width - 8, align: cols[1].align });
+        curX += cols[1].width;
+
+        doc.text(formatDate(item.date), curX + 4, currentY + 5, { width: cols[2].width - 8, align: cols[2].align });
+        curX += cols[2].width;
+
+        doc.text(formatDate(item.due_date), curX + 4, currentY + 5, { width: cols[3].width - 8, align: cols[3].align });
+        curX += cols[3].width;
+
+        doc.text(formatRp(tot), curX + 4, currentY + 5, { width: cols[4].width - 8, align: cols[4].align });
+        curX += cols[4].width;
+
+        doc.text(formatRp(pd), curX + 4, currentY + 5, { width: cols[5].width - 8, align: cols[5].align });
+        curX += cols[5].width;
+
+        doc.font('Helvetica-Bold').fillColor(rem > 0 ? '#b91c1c' : '#059669')
+          .text(formatRp(rem), curX + 4, currentY + 5, { width: cols[6].width - 8, align: cols[6].align });
+
+        currentY += rowHeight;
+      }
+
+      if (isMultiVendor) {
+        if (currentY + rowHeight > pageHeight - 50) {
+          doc.addPage();
+          currentY = 36;
+          renderHeader();
+        }
+
+        doc.rect(margin, currentY, contentWidth, rowHeight).fill('#f1f5f9');
+        doc.rect(margin, currentY, contentWidth, rowHeight).stroke('#cbd5e1');
+
+        doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#334155');
+        const labelWidth = cols[0].width + cols[1].width + cols[2].width + cols[3].width;
+        doc.text(`Subtotal ${vendName}:`, margin + 4, currentY + 5, { width: labelWidth - 8, align: 'right' });
+
+        let curX = margin + labelWidth;
+        doc.text(formatRp(subTotal), curX + 4, currentY + 5, { width: cols[4].width - 8, align: cols[4].align });
+        curX += cols[4].width;
+        doc.text(formatRp(subPaid), curX + 4, currentY + 5, { width: cols[5].width - 8, align: cols[5].align });
+        curX += cols[5].width;
+        doc.fillColor('#b91c1c').text(formatRp(subSisa), curX + 4, currentY + 5, { width: cols[6].width - 8, align: cols[6].align });
+
+        currentY += rowHeight + 4;
+      }
+    }
+
+    if (currentY + 24 > pageHeight - 50) {
+      doc.addPage();
+      currentY = 36;
+      renderHeader();
+    }
+
+    doc.rect(margin, currentY, contentWidth, 24).fill('#0f172a');
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#ffffff');
+    const grandLabelWidth = cols[0].width + cols[1].width + cols[2].width + cols[3].width;
+    doc.text(`GRAND TOTAL (${ids.length} PO Terpilih):`, margin + 4, currentY + 7, { width: grandLabelWidth - 8, align: 'right' });
+
+    let curX = margin + grandLabelWidth;
+    doc.text(formatRp(grandTotal), curX + 4, currentY + 7, { width: cols[4].width - 8, align: cols[4].align });
+    curX += cols[4].width;
+    doc.text(formatRp(grandPaid), curX + 4, currentY + 7, { width: cols[5].width - 8, align: cols[5].align });
+    curX += cols[5].width;
+    doc.fillColor('#fca5a5').text(formatRp(grandSisa), curX + 4, currentY + 7, { width: cols[6].width - 8, align: cols[6].align });
+
+    const totalPages = doc.bufferedPageRange().count;
+    for (let i = 0; i < totalPages; i++) {
+      doc.switchToPage(i);
+      doc.font('Helvetica').fontSize(8).fillColor('#94a3b8')
+        .text(`Halaman ${i + 1} dari ${totalPages}`, margin, pageHeight - 30, { align: 'center', width: contentWidth });
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error('[Export PDF Payables Error]:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Gagal membuat file PDF laporan hutang: ' + err.message });
+    }
   }
 });
 
@@ -4613,6 +5944,20 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
           }
           const newStock = currentStock + qty;
           await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [newStock, newCost, prodId]);
+          await recordStockMove(client, {
+            product_id: prodId,
+            tanggal: poDate ? poDate + ' 12:00:00' : null,
+            tipe: 'pembelian',
+            ref_type: 'purchase_order',
+            ref_id: poId,
+            ref_no: poId,
+            qty_masuk: qty,
+            qty_keluar: 0,
+            qty_sebelum: currentStock,
+            qty_sesudah: newStock,
+            keterangan: `Pembelian PO ${poId}`,
+            created_by: userId
+          });
         }
       }
     }
@@ -4668,16 +6013,120 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
     const taxAmount = ppnEnabled ? Math.round((subtotal - finalDiskon) * (pajakDefault / 100)) : 0;
     const finalTotal = subtotal - finalDiskon + taxAmount;
 
-    // Determine status by payment type
+    // 2. Check active payments in purchase_order_payments (C2: Soft-Lock)
+    const activePayRes = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) as total_active, COUNT(*) as count 
+       FROM purchase_order_payments 
+       WHERE purchase_order_id = ? AND status = 'active'`,
+      [poId]
+    );
+    const totalActivePaid = parseFloat(activePayRes.rows[0].total_active || 0);
+    const activePaymentCount = parseInt(activePayRes.rows[0].count || 0);
+
+    // Rule C2: Edit yang membuat total PO lebih kecil dari total pembayaran cicilan aktif ditolak
+    if (totalActivePaid > 0 && finalTotal < totalActivePaid) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        softLock: true,
+        error: `Total PO baru (Rp ${Math.round(finalTotal).toLocaleString('id-ID')}) tidak boleh lebih kecil dari total pembayaran cicilan aktif yang sudah dicatat (Rp ${Math.round(totalActivePaid).toLocaleString('id-ID')}).`
+      });
+    }
+
+    // Determine status & effectivePaid by payment type & active cicilan
     const instant = await isInstantPayment(pType);
     const finalPaid = parseFloat(paid || paid_amount || 0);
-    const effectivePaid = instant ? finalTotal : finalPaid;
-    const status = instant ? 'Selesai'
-      : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
+    let effectivePaid = 0;
+    let status = 'Dalam Proses';
+
+    if (activePaymentCount > 0) {
+      if (instant) {
+        // Tipe pembayaran diubah ke tunai/instant: void cicilan lama, cancel cash transactions lama
+        await client.query(
+          `UPDATE cash_transactions SET status = 'cancelled' WHERE purchase_order_id = ? AND (status IS NULL OR status = 'active')`,
+          [poId]
+        );
+        await client.query(
+          `UPDATE purchase_order_payments SET status = 'void', void_reason = 'Tipe pembayaran diubah ke Tunai/Instant', void_by = ?, void_at = NOW() WHERE purchase_order_id = ? AND status = 'active'`,
+          [req.user.id, poId]
+        );
+        effectivePaid = finalTotal;
+        status = 'Selesai';
+        const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
+        const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
+        const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
+        const methodEdit = ptNameRes.rows[0]?.name || 'Tunai';
+        await client.query(
+          'INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar PO ${poId} (Ubah ke ${methodEdit})`, finalTotal, methodEdit, poId, pType, req.user.id, 'active']
+        );
+      } else {
+        effectivePaid = totalActivePaid;
+        status = (finalTotal - totalActivePaid) <= 0 ? 'Selesai' : 'Dalam Proses';
+      }
+    } else {
+      effectivePaid = instant ? finalTotal : finalPaid;
+      status = instant ? 'Selesai' : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
+    }
 
     const oldItemsRes = await client.query('SELECT product_id, quantity FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
+
+    // B3 Soft-Lock check for PO: check if any item qty decreased or item was removed
+    const oldPoQtyMap = {};
+    for (const it of oldItemsRes.rows) {
+      oldPoQtyMap[it.product_id] = (oldPoQtyMap[it.product_id] || 0) + parseFloat(it.quantity || 0);
+    }
+    const newPoQtyMap = {};
+    if (items && Array.isArray(items)) {
+      for (const it of items) {
+        const pId = it.product_id || it.id;
+        newPoQtyMap[pId] = (newPoQtyMap[pId] || 0) + parseFloat(it.quantity || it.qty || 0);
+      }
+    }
+    let hasPoReduction = false;
+    for (const pId of Object.keys(oldPoQtyMap)) {
+      const newQ = newPoQtyMap[pId] || 0;
+      if (newQ < oldPoQtyMap[pId]) {
+        hasPoReduction = true;
+        break;
+      }
+    }
+    const correctionReason = req.body.correction_reason || req.body.reason || '';
+    if (hasPoReduction) {
+      if (req.user.role.toLowerCase() !== 'admin') {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          softLock: true,
+          error: 'Pengurangan jumlah item pada PO yang sudah berjalan harus dicatat melalui Retur Pembelian. Hubungi Admin untuk koreksi salah input.'
+        });
+      }
+      if (!correctionReason.trim()) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          softLock: true,
+          error: 'Koreksi salah input untuk pengurangan item PO wajib menyertakan alasan.'
+        });
+      }
+    }
+
     for (const item of oldItemsRes.rows) {
+      const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
+      const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
+      const nextStock = curStock - parseFloat(item.quantity || 0);
       await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [item.quantity, item.product_id]);
+      await recordStockMove(client, {
+        product_id: item.product_id,
+        tanggal: poDate ? poDate + ' 12:00:00' : null,
+        tipe: 'koreksi_edit',
+        ref_type: 'purchase_order',
+        ref_id: poId,
+        ref_no: poId,
+        qty_masuk: 0,
+        qty_keluar: parseFloat(item.quantity || 0),
+        qty_sebelum: curStock,
+        qty_sesudah: nextStock,
+        keterangan: `Koreksi Edit PO ${poId} (reversal item lama)${correctionReason ? ' - ' + correctionReason : ''}`,
+        created_by: req.user.id
+      });
     }
 
     await client.query('DELETE FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
@@ -4690,20 +6139,39 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
         const cost = parseFloat(item.cost || item.cost_price || item.price || 0);
 
         await client.query('INSERT INTO purchase_order_items (id, purchase_order_id, product_id, quantity, cost) VALUES ($1, $2, $3, $4, $5)', [itemId, poId, prodId, qty, cost]);
+        const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [prodId]);
+        const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
+        const nextStock = curStock + qty;
         await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [qty, prodId]);
+        await recordStockMove(client, {
+          product_id: prodId,
+          tanggal: poDate ? poDate + ' 12:00:00' : null,
+          tipe: 'koreksi_edit',
+          ref_type: 'purchase_order',
+          ref_id: poId,
+          ref_no: poId,
+          qty_masuk: qty,
+          qty_keluar: 0,
+          qty_sebelum: curStock,
+          qty_sesudah: nextStock,
+          keterangan: `Koreksi Edit PO ${poId} (item baru)`,
+          created_by: req.user.id
+        });
       }
     }
 
     await client.query('UPDATE purchase_orders SET date = ?, vendor_id = ?, subtotal = ?, discount = ?, tax = ?, total = ?, paid_amount = ?, status = ?, payment_type_id = ?, due_date = ? WHERE id = ?', [poDate, vId, subtotal, finalDiskon, taxAmount, finalTotal, effectivePaid, status, pType, due_date, poId]);
 
-    await client.query('DELETE FROM cash_transactions WHERE purchase_order_id = ?', [poId]);
-    if (effectivePaid > 0) {
-      const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
-      const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
-      const userId = req.user.id;
-      const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
-      const methodEdit = ptNameRes.rows[0]?.name || 'Transfer Bank';
-      await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar PO ${poId} (Edit)`, effectivePaid, methodEdit, poId, pType, userId]);
+    if (activePaymentCount === 0) {
+      await client.query('DELETE FROM cash_transactions WHERE purchase_order_id = ?', [poId]);
+      if (effectivePaid > 0) {
+        const ctPrefix = await getSetting('prefix_cash_transaction', 'CT');
+        const ctId = await generateNextId(client, 'cash_transactions', ctPrefix);
+        const userId = req.user.id;
+        const ptNameRes = await client.query('SELECT name FROM payment_types WHERE id = ?', [pType]);
+        const methodEdit = ptNameRes.rows[0]?.name || 'Transfer Bank';
+        await client.query('INSERT INTO cash_transactions (id, date, type, category, description, amount, method, purchase_order_id, payment_type_id, user_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [ctId, poDate, 'OUT', 'Pembelian Stok', `Bayar PO ${poId} (Edit)`, effectivePaid, methodEdit, poId, pType, userId, 'active']);
+      }
     }
 
     await client.query('COMMIT');
@@ -4734,11 +6202,42 @@ app.put('/api/purchases/:id/cancel', authenticateToken, authorizeRoles('admin', 
 
     const itemsRes = await client.query('SELECT product_id, quantity FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
     for (const item of itemsRes.rows) {
+      const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
+      const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
+      const nextStock = curStock - parseFloat(item.quantity || 0);
       await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [item.quantity, item.product_id]);
+      await recordStockMove(client, {
+        product_id: item.product_id,
+        tipe: 'koreksi_edit',
+        ref_type: 'purchase_order',
+        ref_id: poId,
+        ref_no: poId,
+        qty_masuk: 0,
+        qty_keluar: parseFloat(item.quantity || 0),
+        qty_sebelum: curStock,
+        qty_sesudah: nextStock,
+        keterangan: `Pembatalan PO ${poId}`,
+        created_by: req.user.id
+      });
     }
 
-    await client.query('UPDATE purchase_orders SET status = $1 WHERE id = $2', ['Batal', poId]);
-    await client.query('DELETE FROM cash_transactions WHERE purchase_order_id = $1', [poId]);
+    // Auto-void all active payments for this PO
+    await client.query(
+      `UPDATE purchase_order_payments 
+       SET status = 'void', void_reason = 'PO dibatalkan', void_by = ?, void_at = NOW() 
+       WHERE purchase_order_id = ? AND status = 'active'`,
+      [req.user.id, poId]
+    );
+
+    // Cancel all cash transactions for this PO
+    await client.query(
+      `UPDATE cash_transactions 
+       SET status = 'cancelled' 
+       WHERE purchase_order_id = ? AND (status IS NULL OR status = 'active')`,
+      [poId]
+    );
+
+    await client.query('UPDATE purchase_orders SET status = ?, paid_amount = 0, paid_date = NULL WHERE id = ?', ['Batal', poId]);
 
     await client.query('COMMIT');
     res.json({ success: true });
@@ -5029,6 +6528,33 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir',
 
       const allProductIds = new Set([...Object.keys(oldQtyMap), ...Object.keys(newQtyMap)]);
 
+      // B3 Soft-Lock check for Invoice: check if any item qty decreased or item removed
+      let hasInvReduction = false;
+      for (const pId of Object.keys(oldQtyMap)) {
+        const newQ = newQtyMap[pId] || 0;
+        if (newQ < oldQtyMap[pId]) {
+          hasInvReduction = true;
+          break;
+        }
+      }
+      const invCorrectionReason = req.body.correction_reason || req.body.reason || '';
+      if (hasInvReduction) {
+        if (req.user.role.toLowerCase() !== 'admin') {
+          await client.query('ROLLBACK');
+          return res.status(403).json({
+            softLock: true,
+            error: 'Pengurangan jumlah item pada invoice yang sudah berjalan harus dicatat melalui Retur Penjualan. Hubungi Admin untuk koreksi salah input.'
+          });
+        }
+        if (!invCorrectionReason.trim()) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            softLock: true,
+            error: 'Koreksi salah input untuk pengurangan item invoice wajib menyertakan alasan.'
+          });
+        }
+      }
+
       for (const pId of allProductIds) {
         const oldQty = oldQtyMap[pId] || 0;
         const newQty = newQtyMap[pId] || 0;
@@ -5044,11 +6570,43 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir',
           if (currentStock < delta) {
             throw new Error(`Stok produk "${pRes.rows[0].name}" tidak mencukupi untuk penambahan (${delta} dibutuhkan, stok saat ini: ${currentStock})`);
           }
+          const nextStock = currentStock - delta;
           await client.query('UPDATE products SET stock = stock - ? WHERE id = ?', [delta, pId]);
+          await recordStockMove(client, {
+            product_id: pId,
+            tanggal: invDate ? invDate + ' 12:00:00' : null,
+            tipe: 'koreksi_edit',
+            ref_type: 'invoice',
+            ref_id: invId,
+            ref_no: invId,
+            qty_masuk: 0,
+            qty_keluar: delta,
+            qty_sebelum: currentStock,
+            qty_sesudah: nextStock,
+            keterangan: `Koreksi Edit Invoice (tambah qty): ${invCorrectionReason || '-'}`,
+            created_by: req.user.id
+          });
         } else if (delta < 0) {
           // Qty berkurang / item dihapus: kembalikan selisih ke stok
           const returnQty = Math.abs(delta);
+          const pRes = await client.query('SELECT id, name, stock FROM products WHERE id = ? FOR UPDATE', [pId]);
+          const currentStock = parseFloat(pRes.rows[0]?.stock || 0);
+          const nextStock = currentStock + returnQty;
           await client.query('UPDATE products SET stock = stock + ? WHERE id = ?', [returnQty, pId]);
+          await recordStockMove(client, {
+            product_id: pId,
+            tanggal: invDate ? invDate + ' 12:00:00' : null,
+            tipe: 'koreksi_edit',
+            ref_type: 'invoice',
+            ref_id: invId,
+            ref_no: invId,
+            qty_masuk: returnQty,
+            qty_keluar: 0,
+            qty_sebelum: currentStock,
+            qty_sesudah: nextStock,
+            keterangan: `Koreksi Edit Invoice (kurang qty): ${invCorrectionReason}`,
+            created_by: req.user.id
+          });
         }
       }
 
@@ -5112,7 +6670,23 @@ app.put('/api/invoices/:id/cancel', authenticateToken, authorizeRoles('admin', '
     if (!currentInv.is_outstanding_import) {
       const itemsRes = await client.query('SELECT product_id, quantity FROM invoice_items WHERE invoice_id = $1', [invId]);
       for (const item of itemsRes.rows) {
+        const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
+        const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
+        const nextStock = curStock + parseFloat(item.quantity || 0);
         await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [item.quantity, item.product_id]);
+        await recordStockMove(client, {
+          product_id: item.product_id,
+          tipe: 'cancel_invoice',
+          ref_type: 'invoice',
+          ref_id: invId,
+          ref_no: invId,
+          qty_masuk: parseFloat(item.quantity || 0),
+          qty_keluar: 0,
+          qty_sebelum: curStock,
+          qty_sesudah: nextStock,
+          keterangan: `Pembatalan Invoice ${invId}`,
+          created_by: req.user.id
+        });
       }
     }
 
@@ -5287,6 +6861,20 @@ app.post('/api/products/:id/stock-adjustment', authenticateToken, authorizeRoles
 
     await client.query('INSERT INTO stock_adjustments (id, product_id, type, quantity, reason, adjustment_date, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7)', [adjId, prodId, type, qty, reason, date, userId]);
     await client.query('UPDATE products SET stock = $1 WHERE id = $2', [finalActual, prodId]);
+    await recordStockMove(client, {
+      product_id: prodId,
+      tanggal: date ? date + ' 12:00:00' : null,
+      tipe: 'opname',
+      ref_type: 'stock_adjustment',
+      ref_id: adjId,
+      ref_no: adjId,
+      qty_masuk: diff > 0 ? qty : 0,
+      qty_keluar: diff < 0 ? qty : 0,
+      qty_sebelum: systemStock,
+      qty_sesudah: finalActual,
+      keterangan: reason || 'Stock Opname',
+      created_by: userId
+    });
 
     await client.query('COMMIT');
     res.json({ success: true });
@@ -6545,6 +8133,9 @@ app.post('/api/proformas/:pk/convert', authenticateToken, authorizeRoles('admin'
     // Insert invoice items & reduce stock
     for (const item of invoiceItems) {
       if (!item.id) continue;
+      const curRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [item.id]);
+      const curStock = parseFloat(curRes.rows[0]?.stock || 0);
+      const nextStock = curStock - item.quantity;
       await client.query('UPDATE products SET stock = stock - ? WHERE id = ?', [item.quantity, item.id]);
       const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [item.id]);
       const costSnapshot = parseFloat(costRes.rows[0]?.cost_price || 0);
@@ -6554,6 +8145,20 @@ app.post('/api/proformas/:pk/convert', authenticateToken, authorizeRoles('admin'
         [Date.now().toString() + Math.floor(Math.random() * 1000), invoiceId, item.id,
          item.quantity, item.price, costSnapshot, item.customer_fee || 0, item.fee_notes || null]
       );
+      await recordStockMove(client, {
+        product_id: item.id,
+        tanggal: invoiceDateStr ? invoiceDateStr + ' 12:00:00' : null,
+        tipe: 'penjualan',
+        ref_type: 'invoice',
+        ref_id: invoiceId,
+        ref_no: invoiceId,
+        qty_masuk: 0,
+        qty_keluar: item.quantity,
+        qty_sebelum: curStock,
+        qty_sesudah: nextStock,
+        keterangan: `Penjualan Konversi Proforma ${invoiceId}`,
+        created_by: userId
+      });
     }
 
     // Cash transaction for instant payment
@@ -6708,6 +8313,1159 @@ app.post('/api/invoices/:id/proforma', authenticateToken, authorizeRoles('admin'
   }
 });
 // ─── END PROFORMA MODULE ───────────────────────────────────────────────────────
+
+
+// =========================================================================
+// BATCH B ROUTES: RETUR PENJUALAN, RETUR PEMBELIAN, STOCK MOVE
+// =========================================================================
+
+/**
+ * POST /api/invoices/:id/returns
+ * Membuat Retur Penjualan dalam satu transaksi DB
+ */
+app.post('/api/invoices/:id/returns', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'owner'), async (req, res) => {
+  const invId = req.params.id;
+  const { date, reason, items } = req.body;
+
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Minimal satu item harus dipilih untuk retur' });
+  }
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'Alasan retur wajib diisi' });
+  }
+
+  const returnDate = date ? String(date).split('T')[0] : getTodayWITA();
+  const userId = req.user.id;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Fetch & lock invoice
+    const invRes = await client.query('SELECT * FROM sales_invoices WHERE id = ? FOR UPDATE', [invId]);
+    if (invRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+    }
+    const inv = invRes.rows[0];
+    if (inv.status === 'Cancel' || inv.status === 'Batal') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Invoice yang sudah dibatalkan tidak dapat diretur' });
+    }
+
+    // 2. Fetch original invoice items & existing returns for this invoice
+    const origItemsRes = await client.query('SELECT * FROM invoice_items WHERE invoice_id = ?', [invId]);
+    const origMap = {};
+    for (const row of origItemsRes.rows) {
+      origMap[row.product_id] = row;
+    }
+
+    const prevReturnsRes = await client.query(`
+      SELECT sri.product_id, SUM(sri.quantity) as returned_qty
+      FROM sales_return_items sri
+      JOIN sales_returns sr ON sr.id = sri.return_id
+      WHERE sr.invoice_id = ?
+      GROUP BY sri.product_id
+    `, [invId]);
+    const prevReturnedMap = {};
+    for (const r of prevReturnsRes.rows) {
+      prevReturnedMap[r.product_id] = parseFloat(r.returned_qty || 0);
+    }
+
+    // Proportional factors from original invoice — gunakan tax dari invoice
+    // tapi cek settings ppn_enabled saat ini untuk memastikan konsistensi
+    const settingsRetRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsRetMap = {};
+    settingsRetRes.rows.forEach(r => { settingsRetMap[r.key] = r.value; });
+    const ppnEnabledNow = settingsRetMap['ppn_enabled'] === 'true' || settingsRetMap['ppn_enabled'] === '1';
+
+    const invSubtotal = parseFloat(inv.subtotal || 0);
+    const invDiscount = parseFloat(inv.discount || 0);
+    const discountRatio = invSubtotal > 0 ? (invDiscount / invSubtotal) : 0;
+    const invDpp = invSubtotal - invDiscount;
+    // Hanya hitung tax ratio jika ppn_enabled aktif di pengaturan saat ini
+    const invTax = ppnEnabledNow ? parseFloat(inv.tax || 0) : 0;
+    const taxRatio = (ppnEnabledNow && invDpp > 0) ? (invTax / invDpp) : 0;
+
+    let totalRefund = 0;
+    const itemsToProcess = [];
+
+    for (const it of items) {
+      const pId = it.product_id || it.productId || it.id;
+      const qty = parseFloat(it.quantity || it.qty || 0);
+      const condition = it.condition_type || it.condition || 'kembali_ke_stok';
+
+      if (qty <= 0) continue; // skip 0 qty items
+
+      const orig = origMap[pId];
+      if (!orig) {
+        throw new Error(`Produk dengan ID ${pId} bukan bagian dari invoice ${invId}`);
+      }
+
+      const origQty = parseFloat(orig.quantity || 0);
+      const alreadyReturned = prevReturnedMap[pId] || 0;
+      const maxReturnable = Math.max(0, origQty - alreadyReturned);
+
+      if (qty > maxReturnable) {
+        throw new Error(`Qty retur untuk produk ${pId} melebihi sisa yang bisa diretur (maks: ${maxReturnable}, diminta: ${qty})`);
+      }
+
+      const origPrice = parseFloat(orig.price || 0);
+      const snapshotCost = parseFloat(orig.cost_price_snapshot || 0);
+      const itemSubtotal = origPrice * qty;
+
+      // Net proportional refund
+      const netAfterDiscount = itemSubtotal * (1 - discountRatio);
+      const itemRefund = netAfterDiscount * (1 + taxRatio);
+
+      totalRefund += itemRefund;
+
+      itemsToProcess.push({
+        product_id: pId,
+        quantity: qty,
+        condition_type: condition,
+        price: origPrice,
+        cost_price_snapshot: snapshotCost,
+        subtotal: itemSubtotal,
+        refund_amount: itemRefund
+      });
+    }
+
+    if (itemsToProcess.length === 0) {
+      throw new Error('Minimal satu item harus memiliki qty retur >= 1');
+    }
+
+    // 3. Generate Return ID
+    const returnId = await generateSalesReturnId(client, returnDate);
+
+    // 4. Financial allocation (Piutang vs Deposit)
+    const invTotal = parseFloat(inv.total || 0);
+    const invPaid = parseFloat(inv.paid_amount || 0);
+    const currentReturnAmount = parseFloat(inv.return_amount || 0);
+    const remainingPiutang = Math.max(0, invTotal - invPaid - currentReturnAmount);
+
+    let piutangDeduction = 0;
+    let customerDepositAmount = 0;
+
+    if (totalRefund <= remainingPiutang) {
+      piutangDeduction = totalRefund;
+      customerDepositAmount = 0;
+    } else {
+      piutangDeduction = remainingPiutang;
+      customerDepositAmount = totalRefund - remainingPiutang;
+    }
+
+    // Update customer deposit if excess refund
+    if (customerDepositAmount > 0 && inv.customer_id) {
+      await client.query('UPDATE customers SET deposit = deposit + ? WHERE id = ?', [customerDepositAmount, inv.customer_id]);
+    }
+
+    // Update invoice return_amount & status
+    const newTotalReturn = currentReturnAmount + piutangDeduction;
+    const isNowFullyPaid = (invPaid + newTotalReturn) >= (invTotal - 0.01);
+    const updatedStatus = isNowFullyPaid ? 'Lunas' : inv.status;
+
+    await client.query(
+      'UPDATE sales_invoices SET return_amount = ?, status = ? WHERE id = ?',
+      [newTotalReturn, updatedStatus, invId]
+    );
+
+    // 5. Insert sales_returns header
+    await client.query(`
+      INSERT INTO sales_returns (
+        id, invoice_id, customer_id, date, total_refund,
+        piutang_deduction, customer_deposit_amount, reason, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      returnId, invId, inv.customer_id, returnDate, totalRefund,
+      piutangDeduction, customerDepositAmount, reason.trim(), userId
+    ]);
+
+    // 6. Process items (Stock & Stock Move)
+    for (const item of itemsToProcess) {
+      await client.query(`
+        INSERT INTO sales_return_items (
+          return_id, product_id, quantity, condition_type,
+          price, cost_price_snapshot, subtotal, refund_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        returnId, item.product_id, item.quantity, item.condition_type,
+        item.price, item.cost_price_snapshot, item.subtotal, item.refund_amount
+      ]);
+
+      const prodRes = await client.query('SELECT id, name, stock, cost_price FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
+      const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
+      const curCost = parseFloat(prodRes.rows[0]?.cost_price || 0);
+
+      if (item.condition_type === 'kembali_ke_stok') {
+        const nextStock = curStock + item.quantity;
+        // Weighted average reversal using original cost snapshot
+        let newCost = curCost;
+        if (curStock > 0 && nextStock > 0) {
+          newCost = ((curStock * curCost) + (item.quantity * item.cost_price_snapshot)) / nextStock;
+        } else {
+          newCost = item.cost_price_snapshot > 0 ? item.cost_price_snapshot : curCost;
+        }
+        await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [nextStock, newCost, item.product_id]);
+
+        await recordStockMove(client, {
+          product_id: item.product_id,
+          tanggal: returnDate + ' 12:00:00',
+          tipe: 'retur_penjualan',
+          ref_type: 'sales_return',
+          ref_id: returnId,
+          ref_no: invId,
+          qty_masuk: item.quantity,
+          qty_keluar: 0,
+          qty_sebelum: curStock,
+          qty_sesudah: nextStock,
+          keterangan: `Retur Penjualan ${returnId} (Invoice ${invId}): ${reason.trim()}`,
+          created_by: userId
+        });
+      } else {
+        // Kondisi rusak: stok tidak bertambah, catat stock_moves tipe retur_penjualan_rusak
+        await recordStockMove(client, {
+          product_id: item.product_id,
+          tanggal: returnDate + ' 12:00:00',
+          tipe: 'retur_penjualan_rusak',
+          ref_type: 'sales_return',
+          ref_id: returnId,
+          ref_no: invId,
+          qty_masuk: 0,
+          qty_keluar: 0,
+          qty_sebelum: curStock,
+          qty_sesudah: curStock,
+          keterangan: `Retur Penjualan Rusak ${returnId} (Invoice ${invId}) - tidak kembali ke stok: ${reason.trim()}`,
+          created_by: userId
+        });
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      return_id: returnId,
+      returnId: returnId,
+      total_refund: totalRefund,
+      piutang_deduction: piutangDeduction,
+      customer_deposit_amount: customerDepositAmount,
+      invoice_status: updatedStatus
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * GET /api/invoices/:id/returns-form
+ * Data untuk membuka form retur penjualan: invoice header + items + maxReturnable per item
+ */
+app.get('/api/invoices/:id/returns-form', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'owner'), async (req, res) => {
+  const invId = req.params.id;
+  try {
+    // Fetch invoice header
+    const invRes = await pool.query(`
+      SELECT si.*, c.name as customer_name, c.deposit as customer_deposit
+      FROM sales_invoices si
+      LEFT JOIN customers c ON c.id = si.customer_id
+      WHERE si.id = ?
+    `, [invId]);
+    if (invRes.rows.length === 0) return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+    const inv = invRes.rows[0];
+
+    // Fetch invoice items
+    const itemsRes = await pool.query(`
+      SELECT ii.product_id, ii.quantity, ii.price,
+             p.name as product_name, p.sku as product_sku, p.stock as current_stock
+      FROM invoice_items ii
+      LEFT JOIN products p ON p.id = ii.product_id
+      WHERE ii.invoice_id = ?
+    `, [invId]);
+
+    // Fetch already returned qty per product for this invoice
+    const retRes = await pool.query(`
+      SELECT sri.product_id, SUM(sri.quantity) as returned_qty
+      FROM sales_return_items sri
+      JOIN sales_returns sr ON sr.id = sri.return_id
+      WHERE sr.invoice_id = ?
+      GROUP BY sri.product_id
+    `, [invId]);
+    const retMap = {};
+    retRes.rows.forEach(r => { retMap[r.product_id] = parseFloat(r.returned_qty || 0); });
+
+    const items = itemsRes.rows.map(it => {
+      const returned = retMap[it.product_id] || 0;
+      return {
+        product_id: it.product_id,
+        product_name: it.product_name || it.product_id,
+        product_sku: it.product_sku || '',
+        invoice_qty: parseFloat(it.quantity || 0),
+        returned_qty: returned,
+        maxReturnable: Math.max(0, parseFloat(it.quantity || 0) - returned),
+        price: parseFloat(it.price || 0)
+      };
+    });
+
+    // Remaining debt (sisa piutang)
+    const totalInv = parseFloat(inv.total || 0);
+    const paidAmt = parseFloat(inv.paid_amount || 0);
+    const returnAmt = parseFloat(inv.return_amount || 0);
+    const remainingDebt = Math.max(0, totalInv - paidAmt - returnAmt);
+
+    // Fetch settings for PPN
+    const settingsRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsMap = {};
+    settingsRes.rows.forEach(r => { settingsMap[r.key] = r.value; });
+    const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
+
+    res.json({
+      invoice: {
+        id: inv.id,
+        date: formatDateStr(inv.date),
+        customer_name: inv.customer_name || '-',
+        status: inv.status || '',
+        subtotal: parseFloat(inv.subtotal || 0),
+        discount: parseFloat(inv.discount || 0),
+        tax: ppnEnabled ? parseFloat(inv.tax || 0) : 0,
+        ppn_enabled: ppnEnabled,
+        total: totalInv,
+        paid_amount: paidAmt,
+        return_amount: returnAmt
+      },
+      items,
+      remainingDebt
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/purchases/:id/returns-form
+ * Data untuk membuka form retur pembelian: PO header + items + maxReturnable per item
+ */
+app.get('/api/purchases/:id/returns-form', authenticateToken, authorizeRoles('admin', 'gudang', 'finance', 'owner'), async (req, res) => {
+  const poId = req.params.id;
+  try {
+    // Fetch PO header
+    const poRes = await pool.query(`
+      SELECT po.*, v.name as vendor_name, v.deposit as vendor_deposit
+      FROM purchase_orders po
+      LEFT JOIN vendors v ON v.id = po.vendor_id
+      WHERE po.id = ?
+    `, [poId]);
+    if (poRes.rows.length === 0) return res.status(404).json({ error: 'Purchase Order tidak ditemukan' });
+    const po = poRes.rows[0];
+
+    // Fetch PO items
+    const itemsRes = await pool.query(`
+      SELECT poi.product_id, poi.quantity, poi.cost,
+             p.name as product_name, p.sku as product_sku, p.stock as current_stock
+      FROM purchase_order_items poi
+      LEFT JOIN products p ON p.id = poi.product_id
+      WHERE poi.purchase_order_id = ?
+    `, [poId]);
+
+    // Fetch already returned qty per product for this PO
+    const retRes = await pool.query(`
+      SELECT pri.product_id, SUM(pri.quantity) as returned_qty
+      FROM purchase_return_items pri
+      JOIN purchase_returns pr ON pr.id = pri.return_id
+      WHERE pr.purchase_order_id = ?
+      GROUP BY pri.product_id
+    `, [poId]);
+    const retMap = {};
+    retRes.rows.forEach(r => { retMap[r.product_id] = parseFloat(r.returned_qty || 0); });
+
+    const items = itemsRes.rows.map(it => {
+      const returned = retMap[it.product_id] || 0;
+      return {
+        product_id: it.product_id,
+        product_name: it.product_name || it.product_id,
+        product_sku: it.product_sku || '',
+        purchase_qty: parseFloat(it.quantity || 0),
+        returned_qty: returned,
+        maxReturnable: Math.max(0, parseFloat(it.quantity || 0) - returned),
+        cost: parseFloat(it.cost || 0),
+        current_stock: parseFloat(it.current_stock || 0)
+      };
+    });
+
+    const totalPO = parseFloat(po.total || 0);
+    const paidAmt = parseFloat(po.paid_amount || 0);
+    const returnAmt = parseFloat(po.return_amount || 0);
+    const remainingDebt = Math.max(0, totalPO - paidAmt - returnAmt);
+
+    const settingsPoFormRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsPoFormMap = {};
+    settingsPoFormRes.rows.forEach(r => { settingsPoFormMap[r.key] = r.value; });
+    const ppnEnabledPoForm = settingsPoFormMap['ppn_enabled'] === 'true' || settingsPoFormMap['ppn_enabled'] === '1' || settingsPoFormMap['ppn_enabled'] === true;
+
+    res.json({
+      purchase: {
+        id: po.id,
+        date: formatDateStr(po.date),
+        vendor_name: po.vendor_name || '-',
+        status: po.status || '',
+        subtotal: parseFloat(po.subtotal || 0),
+        discount: parseFloat(po.discount || 0),
+        tax: ppnEnabledPoForm ? parseFloat(po.tax || 0) : 0,
+        ppn_enabled: ppnEnabledPoForm,
+        total: totalPO,
+        paid_amount: paidAmt,
+        return_amount: returnAmt
+      },
+      items,
+      remainingDebt
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/invoices/:id/returns
+ * Mengambil riwayat retur untuk satu invoice tertentu
+ */
+app.get('/api/invoices/:id/returns', authenticateToken, async (req, res) => {
+  const invId = req.params.id;
+  const role = (req.user?.role || 'kasir').toLowerCase();
+  const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+
+  try {
+    const returnsRes = await pool.query(`
+      SELECT sr.*, u.name as user_name
+      FROM sales_returns sr
+      LEFT JOIN users u ON u.id = sr.user_id
+      WHERE sr.invoice_id = ?
+      ORDER BY sr.date DESC, sr.created_at DESC
+    `, [invId]);
+
+    const result = [];
+    for (const r of returnsRes.rows) {
+      const itemsRes = await pool.query(`
+        SELECT sri.*, p.name as product_name, p.sku
+        FROM sales_return_items sri
+        LEFT JOIN products p ON p.id = sri.product_id
+        WHERE sri.return_id = ?
+      `, [r.id]);
+
+      result.push({
+        id: r.id,
+        invoice_id: r.invoice_id,
+        customer_id: r.customer_id,
+        date: formatDateStr(r.date),
+        reason: r.reason,
+        user_name: r.user_name || '-',
+        ...(canSeeFinance ? {
+          total_refund: parseFloat(r.total_refund || 0),
+          piutang_deduction: parseFloat(r.piutang_deduction || 0),
+          customer_deposit_amount: parseFloat(r.customer_deposit_amount || 0),
+        } : {}),
+        items: itemsRes.rows.map(it => ({
+          product_id: it.product_id,
+          product_name: it.product_name,
+          sku: it.sku,
+          quantity: parseFloat(it.quantity || 0),
+          condition_type: it.condition_type,
+          ...(canSeeFinance ? {
+            price: parseFloat(it.price || 0),
+            subtotal: parseFloat(it.subtotal || 0),
+            refund_amount: parseFloat(it.refund_amount || 0)
+          } : {})
+        }))
+      });
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/purchases/:id/returns
+ * Membuat Retur Pembelian dalam satu transaksi DB
+ */
+app.post('/api/purchases/:id/returns', authenticateToken, authorizeRoles('admin', 'gudang', 'finance', 'owner'), async (req, res) => {
+  const poId = req.params.id;
+  const { date, reason, items } = req.body;
+
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Minimal satu item harus dipilih untuk retur' });
+  }
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'Alasan retur wajib diisi' });
+  }
+
+  const returnDate = date ? String(date).split('T')[0] : getTodayWITA();
+  const userId = req.user.id;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Fetch & lock PO
+    const poRes = await client.query('SELECT * FROM purchase_orders WHERE id = ? FOR UPDATE', [poId]);
+    if (poRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Purchase Order tidak ditemukan' });
+    }
+    const po = poRes.rows[0];
+    if (po.status === 'Batal') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Purchase Order yang sudah dibatalkan tidak dapat diretur' });
+    }
+
+    // 2. Fetch original items & previous returns
+    const origItemsRes = await client.query('SELECT * FROM purchase_order_items WHERE purchase_order_id = ?', [poId]);
+    const origMap = {};
+    for (const row of origItemsRes.rows) {
+      origMap[row.product_id] = row;
+    }
+
+    const prevReturnsRes = await client.query(`
+      SELECT pri.product_id, SUM(pri.quantity) as returned_qty
+      FROM purchase_return_items pri
+      JOIN purchase_returns pr ON pr.id = pri.return_id
+      WHERE pr.purchase_order_id = ?
+      GROUP BY pri.product_id
+    `, [poId]);
+    const prevReturnedMap = {};
+    for (const r of prevReturnsRes.rows) {
+      prevReturnedMap[r.product_id] = parseFloat(r.returned_qty || 0);
+    }
+
+    // Fetch settings for PPN
+    const settingsPoRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
+    const settingsPoMap = {};
+    settingsPoRes.rows.forEach(r => { settingsPoMap[r.key] = r.value; });
+    const ppnEnabledPo = settingsPoMap['ppn_enabled'] === 'true' || settingsPoMap['ppn_enabled'] === '1' || settingsPoMap['ppn_enabled'] === true;
+
+    const poSubtotal = parseFloat(po.subtotal || 0);
+    const poDiscount = parseFloat(po.discount || 0);
+    const discountRatio = poSubtotal > 0 ? (poDiscount / poSubtotal) : 0;
+    const poDpp = poSubtotal - poDiscount;
+    const poTax = ppnEnabledPo ? parseFloat(po.tax || 0) : 0;
+    const taxRatio = (ppnEnabledPo && poDpp > 0) ? (poTax / poDpp) : 0;
+
+    let totalRefund = 0;
+    const itemsToProcess = [];
+
+    for (const it of items) {
+      const pId = it.product_id || it.productId || it.id;
+      const qty = parseFloat(it.quantity || it.qty || 0);
+
+      if (qty <= 0) continue;
+
+      const orig = origMap[pId];
+      if (!orig) {
+        throw new Error(`Produk dengan ID ${pId} bukan bagian dari PO ${poId}`);
+      }
+
+      const origQty = parseFloat(orig.quantity || 0);
+      const alreadyReturned = prevReturnedMap[pId] || 0;
+      const maxReturnable = Math.max(0, origQty - alreadyReturned);
+
+      if (qty > maxReturnable) {
+        throw new Error(`Qty retur untuk produk ${pId} melebihi sisa yang bisa diretur (maks: ${maxReturnable}, diminta: ${qty})`);
+      }
+
+      // Check current stock sufficiency
+      const prodRes = await client.query('SELECT id, name, stock, cost_price FROM products WHERE id = ? FOR UPDATE', [pId]);
+      if (prodRes.rows.length === 0) {
+        throw new Error(`Produk ${pId} tidak ditemukan`);
+      }
+      const curStock = parseFloat(prodRes.rows[0].stock || 0);
+      if (curStock < qty) {
+        throw new Error(`Stok produk "${prodRes.rows[0].name}" tidak mencukupi untuk retur pembelian (dibutuhkan ${qty}, stok saat ini: ${curStock})`);
+      }
+
+      const origCost = parseFloat(orig.cost || 0);
+      const itemSubtotal = origCost * qty;
+      const netAfterDiscount = itemSubtotal * (1 - discountRatio);
+      const itemRefund = netAfterDiscount * (1 + taxRatio);
+
+      totalRefund += itemRefund;
+
+      itemsToProcess.push({
+        product_id: pId,
+        quantity: qty,
+        cost: origCost,
+        subtotal: itemSubtotal,
+        refund_amount: itemRefund,
+        curStock,
+        curCost: parseFloat(prodRes.rows[0].cost_price || 0)
+      });
+    }
+
+    if (itemsToProcess.length === 0) {
+      throw new Error('Minimal satu item harus memiliki qty retur >= 1');
+    }
+
+    // 3. Generate Return ID
+    const returnId = await generatePurchaseReturnId(client, returnDate);
+
+    // 4. Financial allocation (Hutang vs Deposit Vendor)
+    const poTotal = parseFloat(po.total || 0);
+    const poPaid = parseFloat(po.paid_amount || 0);
+    const currentReturnAmount = parseFloat(po.return_amount || 0);
+    const remainingHutang = Math.max(0, poTotal - poPaid - currentReturnAmount);
+
+    let hutangDeduction = 0;
+    let vendorDepositAmount = 0;
+
+    if (totalRefund <= remainingHutang) {
+      hutangDeduction = totalRefund;
+      vendorDepositAmount = 0;
+    } else {
+      hutangDeduction = remainingHutang;
+      vendorDepositAmount = totalRefund - remainingHutang;
+    }
+
+    // Update vendor deposit if excess refund
+    if (vendorDepositAmount > 0 && po.vendor_id) {
+      await client.query('UPDATE vendors SET deposit = deposit + ? WHERE id = ?', [vendorDepositAmount, po.vendor_id]);
+    }
+
+    // Update PO return_amount & status
+    const newTotalReturn = currentReturnAmount + hutangDeduction;
+    const isNowFullySettled = (poPaid + newTotalReturn) >= (poTotal - 0.01);
+    const updatedStatus = isNowFullySettled ? 'Selesai' : po.status;
+
+    await client.query(
+      'UPDATE purchase_orders SET return_amount = ?, status = ? WHERE id = ?',
+      [newTotalReturn, updatedStatus, poId]
+    );
+
+    // 5. Insert purchase_returns header
+    await client.query(`
+      INSERT INTO purchase_returns (
+        id, purchase_order_id, vendor_id, date, total_refund,
+        hutang_deduction, vendor_deposit_amount, reason, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      returnId, poId, po.vendor_id, returnDate, totalRefund,
+      hutangDeduction, vendorDepositAmount, reason.trim(), userId
+    ]);
+
+    // 6. Process items (Stock deduction, Weighted Average Cost recalculation, Stock Move)
+    for (const item of itemsToProcess) {
+      await client.query(`
+        INSERT INTO purchase_return_items (
+          return_id, product_id, quantity, cost, subtotal, refund_amount
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        returnId, item.product_id, item.quantity, item.cost, item.subtotal, item.refund_amount
+      ]);
+
+      const nextStock = item.curStock - item.quantity;
+      let newCost = item.curCost;
+      if (nextStock > 0) {
+        newCost = ((item.curStock * item.curCost) - (item.quantity * item.cost)) / nextStock;
+        if (newCost < 0) newCost = item.curCost;
+      }
+
+      await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [nextStock, newCost, item.product_id]);
+
+      await recordStockMove(client, {
+        product_id: item.product_id,
+        tanggal: returnDate + ' 12:00:00',
+        tipe: 'retur_pembelian',
+        ref_type: 'purchase_return',
+        ref_id: returnId,
+        ref_no: poId,
+        qty_masuk: 0,
+        qty_keluar: item.quantity,
+        qty_sebelum: item.curStock,
+        qty_sesudah: nextStock,
+        keterangan: `Retur Pembelian ${returnId} (PO ${poId}): ${reason.trim()}`,
+        created_by: userId
+      });
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      return_id: returnId,
+      returnId: returnId,
+      total_refund: totalRefund,
+      hutang_deduction: hutangDeduction,
+      vendor_deposit_amount: vendorDepositAmount,
+      po_status: updatedStatus
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * GET /api/purchases/:id/returns
+ * Mengambil riwayat retur untuk satu PO tertentu
+ */
+app.get('/api/purchases/:id/returns', authenticateToken, async (req, res) => {
+  const poId = req.params.id;
+  const role = (req.user?.role || 'kasir').toLowerCase();
+  const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+
+  try {
+    const returnsRes = await pool.query(`
+      SELECT pr.*, u.name as user_name
+      FROM purchase_returns pr
+      LEFT JOIN users u ON u.id = pr.user_id
+      WHERE pr.purchase_order_id = ?
+      ORDER BY pr.date DESC, pr.created_at DESC
+    `, [poId]);
+
+    const result = [];
+    for (const r of returnsRes.rows) {
+      const itemsRes = await pool.query(`
+        SELECT pri.*, p.name as product_name, p.sku
+        FROM purchase_return_items pri
+        LEFT JOIN products p ON p.id = pri.product_id
+        WHERE pri.return_id = ?
+      `, [r.id]);
+
+      result.push({
+        id: r.id,
+        purchase_order_id: r.purchase_order_id,
+        vendor_id: r.vendor_id,
+        date: formatDateStr(r.date),
+        reason: r.reason,
+        user_name: r.user_name || '-',
+        ...(canSeeFinance ? {
+          total_refund: parseFloat(r.total_refund || 0),
+          hutang_deduction: parseFloat(r.hutang_deduction || 0),
+          vendor_deposit_amount: parseFloat(r.vendor_deposit_amount || 0),
+        } : {}),
+        items: itemsRes.rows.map(it => ({
+          product_id: it.product_id,
+          product_name: it.product_name,
+          sku: it.sku,
+          quantity: parseFloat(it.quantity || 0),
+          ...(canSeeFinance ? {
+            cost: parseFloat(it.cost || 0),
+            subtotal: parseFloat(it.subtotal || 0),
+            refund_amount: parseFloat(it.refund_amount || 0)
+          } : {})
+        }))
+      });
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/returns/sales
+ * Daftar Retur Penjualan (Paginated 80 baris, disanitasi berdasarkan role)
+ */
+app.get('/api/returns/sales', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'gudang', 'owner'), async (req, res) => {
+  try {
+    const { page, limit: limitQ, q, date_from, date_to } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+    const offset = (pageNum - 1) * limitNum;
+
+    const role = (req.user?.role || 'kasir').toLowerCase();
+    const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(sr.id LIKE ? OR sr.invoice_id LIKE ? OR c.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern);
+    }
+    if (date_from) {
+      whereConditions.push('sr.date >= ?');
+      params.push(date_from);
+    }
+    if (date_to) {
+      whereConditions.push('sr.date <= ?');
+      params.push(date_to);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const countRes = await pool.query(`
+      SELECT COUNT(*) as total
+      FROM sales_returns sr
+      LEFT JOIN customers c ON c.id = sr.customer_id
+      ${whereClause}
+    `, params);
+    const total = parseInt(countRes.rows[0]?.total || 0);
+
+    const dataRes = await pool.query(`
+      SELECT sr.*, c.name as customer_name, u.name as user_name,
+        (SELECT COUNT(*) FROM sales_return_items WHERE return_id = sr.id) as item_count,
+        (SELECT GROUP_CONCAT(DISTINCT condition_type) FROM sales_return_items WHERE return_id = sr.id) as conditions
+      FROM sales_returns sr
+      LEFT JOIN customers c ON c.id = sr.customer_id
+      LEFT JOIN users u ON u.id = sr.user_id
+      ${whereClause}
+      ORDER BY sr.date DESC, sr.created_at DESC
+      LIMIT ? OFFSET ?
+    `, [...params, limitNum, offset]);
+
+    const data = dataRes.rows.map(r => {
+      const row = {
+        id: r.id,
+        invoice_id: r.invoice_id,
+        date: formatDateStr(r.date),
+        customer_name: r.customer_name || 'Tanpa Pelanggan',
+        item_count: parseInt(r.item_count || 0),
+        reason: r.reason,
+        conditions: r.conditions || 'kembali_ke_stok',
+        user_name: r.user_name || '-'
+      };
+      if (canSeeFinance) {
+        row.total_refund = parseFloat(r.total_refund || 0);
+        row.piutang_deduction = parseFloat(r.piutang_deduction || 0);
+        row.customer_deposit_amount = parseFloat(r.customer_deposit_amount || 0);
+      }
+      return row;
+    });
+
+    res.json({
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/returns/sales/:id
+ * Detail Retur Penjualan (disanitasi)
+ */
+app.get('/api/returns/sales/:id', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'gudang', 'owner'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const role = (req.user?.role || 'kasir').toLowerCase();
+    const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+
+    const srRes = await pool.query(`
+      SELECT sr.*, c.name as customer_name, u.name as user_name
+      FROM sales_returns sr
+      LEFT JOIN customers c ON c.id = sr.customer_id
+      LEFT JOIN users u ON u.id = sr.user_id
+      WHERE sr.id = ?
+    `, [id]);
+    if (srRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Retur tidak ditemukan' });
+    }
+    const sr = srRes.rows[0];
+
+    const itemsRes = await pool.query(`
+      SELECT sri.*, p.name as product_name, p.sku
+      FROM sales_return_items sri
+      LEFT JOIN products p ON p.id = sri.product_id
+      WHERE sri.return_id = ?
+    `, [id]);
+
+    const result = {
+      return: {
+        id: sr.id,
+        invoice_id: sr.invoice_id,
+        return_date: formatDateStr(sr.date),
+        customer_id: sr.customer_id,
+        customer_name: sr.customer_name || 'Tanpa Pelanggan',
+        reason: sr.reason,
+        created_by_name: sr.user_name || '-',
+        ...(canSeeFinance ? {
+          total_refund: parseFloat(sr.total_refund || 0),
+          deducted_from_debt: parseFloat(sr.piutang_deduction || 0),
+          added_to_deposit: parseFloat(sr.customer_deposit_amount || 0),
+        } : {})
+      },
+      items: itemsRes.rows.map(it => ({
+        product_id: it.product_id,
+        product_name: it.product_name,
+        product_sku: it.sku || '',
+        qty: parseFloat(it.quantity || 0),
+        condition: it.condition_type,
+        ...(canSeeFinance ? {
+          price: parseFloat(it.price || 0),
+          subtotal: parseFloat(it.subtotal || 0),
+          refund_amount: parseFloat(it.refund_amount || 0)
+        } : {})
+      }))
+    };
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/returns/purchases
+ * Daftar Retur Pembelian (Paginated 80 baris, disanitasi berdasarkan role)
+ */
+app.get('/api/returns/purchases', authenticateToken, authorizeRoles('admin', 'gudang', 'finance', 'owner'), async (req, res) => {
+  try {
+    const { page, limit: limitQ, q, date_from, date_to } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+    const offset = (pageNum - 1) * limitNum;
+
+    const role = (req.user?.role || 'kasir').toLowerCase();
+    const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(pr.id LIKE ? OR pr.purchase_order_id LIKE ? OR v.name LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern);
+    }
+    if (date_from) {
+      whereConditions.push('pr.date >= ?');
+      params.push(date_from);
+    }
+    if (date_to) {
+      whereConditions.push('pr.date <= ?');
+      params.push(date_to);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const countRes = await pool.query(`
+      SELECT COUNT(*) as total
+      FROM purchase_returns pr
+      LEFT JOIN vendors v ON v.id = pr.vendor_id
+      ${whereClause}
+    `, params);
+    const total = parseInt(countRes.rows[0]?.total || 0);
+
+    const dataRes = await pool.query(`
+      SELECT pr.*, v.name as vendor_name, u.name as user_name,
+        (SELECT COUNT(*) FROM purchase_return_items WHERE return_id = pr.id) as item_count
+      FROM purchase_returns pr
+      LEFT JOIN vendors v ON v.id = pr.vendor_id
+      LEFT JOIN users u ON u.id = pr.user_id
+      ${whereClause}
+      ORDER BY pr.date DESC, pr.created_at DESC
+      LIMIT ? OFFSET ?
+    `, [...params, limitNum, offset]);
+
+    const data = dataRes.rows.map(r => {
+      const row = {
+        id: r.id,
+        purchase_order_id: r.purchase_order_id,
+        date: formatDateStr(r.date),
+        vendor_name: r.vendor_name || 'Tanpa Vendor',
+        item_count: parseInt(r.item_count || 0),
+        reason: r.reason,
+        user_name: r.user_name || '-'
+      };
+      if (canSeeFinance) {
+        row.total_refund = parseFloat(r.total_refund || 0);
+        row.hutang_deduction = parseFloat(r.hutang_deduction || 0);
+        row.vendor_deposit_amount = parseFloat(r.vendor_deposit_amount || 0);
+      }
+      return row;
+    });
+
+    res.json({
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/returns/purchases/:id
+ * Detail Retur Pembelian (disanitasi)
+ */
+app.get('/api/returns/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang', 'finance', 'owner'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const role = (req.user?.role || 'kasir').toLowerCase();
+    const canSeeFinance = ['admin', 'finance', 'owner'].includes(role);
+
+    const prRes = await pool.query(`
+      SELECT pr.*, v.name as vendor_name, u.name as user_name
+      FROM purchase_returns pr
+      LEFT JOIN vendors v ON v.id = pr.vendor_id
+      LEFT JOIN users u ON u.id = pr.user_id
+      WHERE pr.id = ?
+    `, [id]);
+    if (prRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Retur tidak ditemukan' });
+    }
+    const pr = prRes.rows[0];
+
+    const itemsRes = await pool.query(`
+      SELECT pri.*, p.name as product_name, p.sku
+      FROM purchase_return_items pri
+      LEFT JOIN products p ON p.id = pri.product_id
+      WHERE pri.return_id = ?
+    `, [id]);
+
+    const result = {
+      return: {
+        id: pr.id,
+        purchase_id: pr.purchase_order_id,
+        return_date: formatDateStr(pr.date),
+        vendor_id: pr.vendor_id,
+        vendor_name: pr.vendor_name || 'Tanpa Vendor',
+        reason: pr.reason,
+        created_by_name: pr.user_name || '-',
+        ...(canSeeFinance ? {
+          total_refund: parseFloat(pr.total_refund || 0),
+          deducted_from_debt: parseFloat(pr.hutang_deduction || 0),
+          added_to_deposit: parseFloat(pr.vendor_deposit_amount || 0),
+        } : {})
+      },
+      items: itemsRes.rows.map(it => ({
+        product_id: it.product_id,
+        product_name: it.product_name,
+        product_sku: it.sku || '',
+        qty: parseFloat(it.quantity || 0),
+        condition: 'retur_ke_vendor',
+        ...(canSeeFinance ? {
+          price: parseFloat(it.cost || 0),
+          subtotal: parseFloat(it.subtotal || 0),
+          refund_amount: parseFloat(it.refund_amount || 0)
+        } : {})
+      }))
+    };
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/stock-moves
+ * Monitoring qty barang keluar-masuk saja (B4.2).
+ * STRICTLY NO FINANCIAL DATA (no prices, HPP, cash, balances).
+ */
+app.get('/api/stock-moves', authenticateToken, authorizeRoles('admin', 'gudang', 'owner'), async (req, res) => {
+  try {
+    const { page, limit: limitQ, q, search, tipe, product_id, date_from, date_to } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(80, Math.max(1, parseInt(limitQ) || 80));
+    const offset = (pageNum - 1) * limitNum;
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (q || search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(p.name LIKE ? OR p.sku LIKE ? OR sm.ref_no LIKE ? OR sm.keterangan LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern, pattern);
+    }
+
+    if (product_id && product_id !== 'all') {
+      whereConditions.push('sm.product_id = ?');
+      params.push(product_id);
+    }
+
+    if (tipe && tipe !== 'all') {
+      whereConditions.push('sm.tipe = ?');
+      params.push(tipe.toLowerCase());
+    }
+
+    if (date_from) {
+      whereConditions.push('DATE(sm.tanggal) >= ?');
+      params.push(date_from);
+    }
+
+    if (date_to) {
+      whereConditions.push('DATE(sm.tanggal) <= ?');
+      params.push(date_to);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const countRes = await pool.query(`
+      SELECT COUNT(*) as total
+      FROM stock_moves sm
+      JOIN products p ON p.id = sm.product_id
+      ${whereClause}
+    `, params);
+    const total = parseInt(countRes.rows[0]?.total || 0);
+
+    const dataRes = await pool.query(`
+      SELECT sm.id, sm.tanggal, sm.tipe, sm.ref_type, sm.ref_id, sm.ref_no,
+             sm.qty_masuk, sm.qty_keluar, sm.qty_sebelum, sm.qty_sesudah,
+             sm.keterangan, sm.created_at, sm.is_backfill,
+             p.id as product_id, p.name as product_name, p.sku, pu.name as unit_name,
+             u.name as user_name
+      FROM stock_moves sm
+      JOIN products p ON p.id = sm.product_id
+      LEFT JOIN product_units pu ON pu.id = p.unit_id
+      LEFT JOIN users u ON u.id = sm.created_by
+      ${whereClause}
+      ORDER BY sm.tanggal DESC, sm.id DESC
+      LIMIT ? OFFSET ?
+    `, [...params, limitNum, offset]);
+
+    // Format output strictly without any financial fields
+    const data = dataRes.rows.map(r => ({
+      id: r.id,
+      tanggal: r.tanggal ? String(r.tanggal).replace('T', ' ').slice(0, 19) : '',
+      productId: r.product_id,
+      productName: r.product_name,
+      sku: r.sku || '-',
+      unit: r.unit_name || 'Pcs',
+      tipe: r.tipe,
+      refType: r.ref_type || '-',
+      refId: r.ref_id || '-',
+      refNo: r.ref_no || r.ref_id || '-',
+      qtyMasuk: parseFloat(r.qty_masuk || 0),
+      qtyKeluar: parseFloat(r.qty_keluar || 0),
+      qtySebelum: parseFloat(r.qty_sebelum || 0),
+      stokSesudah: parseFloat(r.qty_sesudah || 0),
+      keterangan: r.keterangan || '-',
+      user: r.user_name || 'Sistem',
+      isBackfill: Boolean(r.is_backfill)
+    }));
+
+    res.json({
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// =========================================================================
 
 // Bind ke 0.0.0.0 agar bisa diakses dari luar (wajib di hosting)
 app.listen(port, '0.0.0.0', () => {

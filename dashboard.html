@@ -51,11 +51,14 @@
                     <div class="nav-item" data-page="products" id="nav-products">
                         <i data-lucide="package-search"></i> Produk & Stok
                     </div>
+                    <div class="nav-item" data-page="stock-moves" id="nav-stock-moves">
+                        <i data-lucide="boxes"></i> Stock Move
+                    </div>
                     <div class="nav-item" data-page="customers" id="nav-customers">
                         <i data-lucide="users"></i> Pelanggan
                     </div>
                     <div class="nav-item" data-page="pricelists" id="nav-pricelists">
-                        <i data-lucide="tags"></i> Pricelist
+                        <i data-lucide="tags"></i> Special Price
                     </div>
                     <div class="nav-item" data-page="vendors" id="nav-vendors">
                         <i data-lucide="truck"></i> Vendor
@@ -68,6 +71,9 @@
                     </div>
                     <div class="nav-item" data-page="invoices" id="nav-invoices">
                         <i data-lucide="file-text"></i> Transaksi / Invoice
+                    </div>
+                    <div class="nav-item" data-page="returns" id="nav-returns">
+                        <i data-lucide="rotate-ccw"></i> Retur
                     </div>
                 </div>
 
@@ -183,7 +189,7 @@
                     </div>
 
                     <!-- Charts Row -->
-                    <div class="dashboard-grid-2">
+                    <div class="dashboard-grid-2" id="dashboard-charts-row">
                         <div class="dash-card">
                             <div class="dash-card-header">
                                 <span class="dash-card-title">Penjualan 7 Hari Terakhir</span>
@@ -214,8 +220,8 @@
                     </div>
 
                     <!-- Recent Transactions & Low Stock -->
-                    <div class="dashboard-grid-2">
-                        <div class="dash-card">
+                    <div class="dashboard-grid-2" id="dashboard-bottom-grid">
+                        <div class="dash-card" id="dash-card-recent-transactions">
                             <div class="dash-card-header">
                                 <span class="dash-card-title">Transaksi Terbaru</span>
                                 <button class="dash-card-action" onclick="navigateTo('invoices')">Lihat Semua</button>
@@ -226,7 +232,7 @@
                                         <tr>
                                             <th>Invoice</th>
                                             <th>Pelanggan</th>
-                                            <th>Total</th>
+                                            <th id="th-recent-tx-total">Total</th>
                                             <th>Status</th>
                                         </tr>
                                     </thead>
@@ -237,12 +243,38 @@
                             </div>
                         </div>
 
-                        <div class="dash-card">
+                        <!-- Card Stock Move Terbaru (Admin & Gudang) -->
+                        <div class="dash-card" id="dash-card-recent-stock-moves" style="display: none;">
+                            <div class="dash-card-header">
+                                <span class="dash-card-title">Stock Move Terbaru</span>
+                                <button class="dash-card-action" onclick="navigateTo('stock-moves')">Lihat Semua</button>
+                            </div>
+                            <div class="dash-card-body" style="padding: 0; max-height: 290px; overflow-y: auto;">
+                                <table class="data-table" id="recent-stock-moves-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Waktu</th>
+                                            <th>Produk</th>
+                                            <th>Tipe</th>
+                                            <th>Ref</th>
+                                            <th>Masuk</th>
+                                            <th>Keluar</th>
+                                            <th>Sisa</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="recent-stock-moves-body">
+                                        <!-- Rendered by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="dash-card" id="dash-card-low-stock">
                             <div class="dash-card-header">
                                 <span class="dash-card-title">Stok Menipis</span>
                                 <button class="dash-card-action" onclick="navigateTo('products')">Kelola Stok</button>
                             </div>
-                            <div class="dash-card-body" style="padding: 0;">
+                            <div class="dash-card-body" id="low-stock-frame" style="padding: 0; max-height: 290px; overflow-y: auto;">
                                 <table class="data-table" id="low-stock-table">
                                     <thead>
                                         <tr>
@@ -308,7 +340,7 @@
                                     <label style="margin: 0; font-weight: 600;">Pelanggan</label>
                                     <span id="pos-customer-pricelist-badge" style="display: none; font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-weight: 600; align-items: center; gap: 4px;">
                                         <i data-lucide="tag" style="width: 10px; height: 10px;"></i>
-                                        <span id="pos-customer-pricelist-name">Pricelist</span>
+                                        <span id="pos-customer-pricelist-name">Special Price</span>
                                     </span>
                                 </div>
                                 <div class="customer-search-wrapper" style="position: relative;">
@@ -415,6 +447,11 @@
                             <select class="filter-select" id="product-category-filter">
                                 <!-- Filled by JS -->
                             </select>
+                            <select class="filter-select" id="product-status-filter" onchange="onProductStatusFilterChange()">
+                                <option value="active">Status: Aktif</option>
+                                <option value="inactive">Status: Nonaktif</option>
+                                <option value="all">Status: Semua</option>
+                            </select>
                         </div>
                         <div class="page-toolbar-right">
                             <button class="btn-toolbar secondary" onclick="openImportModal('produk')">
@@ -503,8 +540,8 @@
                                         <th>Tipe Pembayaran</th>
                                         <th>Kota</th>
                                         <th>Telepon / WA</th>
-                                        <th>Limit Piutang</th>
-                                        <th>Sisa Limit Piutang</th>
+                                        <th class="th-customer-piutang">Limit Piutang</th>
+                                        <th class="th-customer-piutang">Sisa Limit Piutang</th>
                                         <th>Total Belanja</th>
                                         <th style="text-align: right;">Aksi</th>
                                     </tr>
@@ -815,10 +852,19 @@
                             </div>
                             <select class="filter-select" id="hutang-status-filter" onchange="renderHutang()">
                                 <option value="all">Semua Status</option>
-                                <option value="belum bayar">Belum Bayar</option>
+                                <option value="belum bayar">Belum Lunas</option>
                                 <option value="sebagian">Sebagian</option>
                                 <option value="lunas">Lunas</option>
+                                <option value="overdue">Lewat Jatuh Tempo</option>
                             </select>
+                        </div>
+                        <div class="page-toolbar-right">
+                            <button class="btn-toolbar secondary" id="btn-export-pdf-hutang" disabled onclick="exportHutangPDF()">
+                                <i data-lucide="file-text"></i> Export PDF
+                            </button>
+                            <button class="btn-toolbar secondary" id="btn-import-hutang" onclick="openImportModal('hutang')">
+                                <i data-lucide="upload"></i> Import Outstanding
+                            </button>
                         </div>
                     </div>
 
@@ -826,6 +872,7 @@
                         <table class="data-table">
                             <thead>
                                 <tr>
+                                    <th style="width: 36px; text-align: center;"><input type="checkbox" id="check-all-hutang" onchange="toggleSelectAllHutang(this)"></th>
                                     <th>No. PO</th>
                                     <th>Vendor</th>
                                     <th>Total</th>
@@ -1233,7 +1280,7 @@
                                         placeholder {YYYY}, {YY}, {MM}</span>
                                 </div>
                                 <div class="form-group">
-                                    <label>Prefix Daftar Harga (Pricelist)</label>
+                                    <label>Prefix Special Price</label>
                                     <input type="text" id="settings-prefix-pricelist" class="form-input"
                                         placeholder="Contoh: PL">
                                     <span class="help-text" style="font-size:0.75rem; color:var(--gray-400);">Dukung
@@ -1513,16 +1560,16 @@
                 </section>
 
                 <!-- ============================================================
-                 PAGE: PRICELIST (Admin / Owner Only)
+                 PAGE: SPECIAL PRICE (Admin / Owner Only)
                  ============================================================ -->
                 <section class="page-section" id="page-pricelists">
-                    <!-- VIEW 1: DAFTAR PRICELIST -->
+                    <!-- VIEW 1: DAFTAR SPECIAL PRICE -->
                     <div id="pricelists-list-view">
                         <div class="page-toolbar">
                             <div class="page-toolbar-left">
                                 <div class="toolbar-search">
                                     <i data-lucide="search"></i>
-                                    <input type="text" placeholder="Cari pricelist..." id="pricelist-search">
+                                    <input type="text" placeholder="Cari special price..." id="pricelist-search">
                                 </div>
                                 <select class="filter-select" id="pricelist-status-filter">
                                     <option value="all">Semua Status</option>
@@ -1532,7 +1579,7 @@
                             </div>
                             <div class="page-toolbar-right">
                                 <button class="btn-toolbar primary" onclick="openCreatePricelistModal()">
-                                    <i data-lucide="plus-circle"></i> Buat Pricelist Baru
+                                    <i data-lucide="plus-circle"></i> Buat Special Price Baru
                                 </button>
                             </div>
                         </div>
@@ -1542,7 +1589,7 @@
                                 <thead>
                                     <tr>
                                         <th>Kode</th>
-                                        <th>Nama Pricelist</th>
+                                        <th>Nama Special Price</th>
                                         <th>Keterangan</th>
                                         <th style="text-align: center;">Jumlah Produk</th>
                                         <th style="text-align: center;">Pelanggan Pemakai</th>
@@ -1554,7 +1601,7 @@
                                     <tr>
                                         <td colspan="7" style="text-align: center; padding: 2.5rem; color: var(--gray-400);">
                                             <i data-lucide="loader" class="spin" style="width: 24px; height: 24px; margin-bottom: 0.5rem; display: inline-block;"></i>
-                                            <div>Memuat daftar pricelist...</div>
+                                            <div>Memuat daftar special price...</div>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -1562,7 +1609,7 @@
                         </div>
                     </div>
 
-                    <!-- VIEW 2: DETAIL & KELOLA ITEM PRICELIST -->
+                    <!-- VIEW 2: DETAIL & KELOLA ITEM SPECIAL PRICE -->
                     <div id="pricelists-detail-view" style="display: none;">
                         <!-- Detail Header -->
                         <div style="background: white; border-radius: 0.75rem; border: 1px solid var(--gray-200); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
@@ -1619,7 +1666,7 @@
                             <div class="page-toolbar-left">
                                 <div class="toolbar-search">
                                     <i data-lucide="search"></i>
-                                    <input type="text" placeholder="Cari item di pricelist..." id="detail-pl-search" oninput="filterPricelistItems()">
+                                    <input type="text" placeholder="Cari item di special price..." id="detail-pl-search" oninput="filterPricelistItems()">
                                 </div>
                             </div>
                             <div class="page-toolbar-right" style="display: flex; gap: 0.5rem; align-items: center;">
@@ -1643,9 +1690,9 @@
                                         <th>Satuan</th>
                                         <th style="text-align: right;">Harga Master</th>
                                         <th style="text-align: right;" id="th-pl-hpp">HPP</th>
-                                        <th style="text-align: right; width: 170px;">Harga Pricelist (Rp)</th>
+                                        <th style="text-align: right; width: 170px;">Harga Special Price (Rp)</th>
                                         <th style="text-align: right;">Selisih (Rp & %)</th>
-                                        <th style="text-align: center;">Status HPP</th>
+                                        <th style="text-align: center;" id="th-pl-status-hpp">Status HPP</th>
                                         <th style="text-align: center; width: 60px;">Aksi</th>
                                     </tr>
                                 </thead>
@@ -1658,6 +1705,154 @@
                     <div id="pagination-customers" class="pagination-container"></div>
                 </section>
 
+                <!-- ============================================================
+                 PAGE: DAFTAR RETUR (B4.1)
+                 ============================================================ -->
+                <section class="page-section" id="page-returns">
+                    <div class="page-toolbar" style="flex-wrap: wrap; gap: 0.75rem;">
+                        <div class="page-toolbar-left" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                            <div class="tab-filters" id="returns-tabs">
+                                <button class="tab-filter active" id="tab-btn-returns-sales" onclick="switchReturnsTab('sales')">Retur Penjualan</button>
+                                <button class="tab-filter" id="tab-btn-returns-purchases" onclick="switchReturnsTab('purchases')">Retur Pembelian</button>
+                            </div>
+                            <div class="toolbar-search">
+                                <i data-lucide="search"></i>
+                                <input type="text" placeholder="Cari no. retur, no. ref, nama..." id="returns-search" oninput="debounceReturnsSearch()">
+                            </div>
+                        </div>
+                        <div class="page-toolbar-right" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem;">
+                                <span>Dari:</span>
+                                <input type="date" id="returns-date-from" class="form-input" style="padding: 0.35rem 0.5rem; font-size: 0.85rem;" onchange="loadReturnsCurrentTab()">
+                                <span>s/d</span>
+                                <input type="date" id="returns-date-to" class="form-input" style="padding: 0.35rem 0.5rem; font-size: 0.85rem;" onchange="loadReturnsCurrentTab()">
+                            </div>
+                            <button class="btn-toolbar secondary" onclick="resetReturnsFilter()">
+                                <i data-lucide="rotate-ccw"></i> Reset
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Tab Content: Retur Penjualan -->
+                    <div id="returns-sales-content">
+                        <div class="data-table-wrapper">
+                            <table class="data-table" id="returns-sales-table">
+                                <thead>
+                                    <tr>
+                                        <th>No. Retur</th>
+                                        <th>Tanggal</th>
+                                        <th>No. Invoice</th>
+                                        <th>Pelanggan</th>
+                                        <th style="text-align: center;">Item</th>
+                                        <th>Alasan</th>
+                                        <th>Kondisi</th>
+                                        <th class="th-returns-finance" style="text-align: right;">Nilai Retur</th>
+                                        <th style="text-align: right;">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="returns-sales-body">
+                                    <!-- Rendered by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="empty-state" id="returns-sales-empty" style="display:none;">
+                            <i data-lucide="rotate-ccw"></i>
+                            <p>Belum ada data retur penjualan.</p>
+                        </div>
+                        <div id="pagination-returns-sales" class="pagination-container"></div>
+                    </div>
+
+                    <!-- Tab Content: Retur Pembelian -->
+                    <div id="returns-purchases-content" style="display: none;">
+                        <div class="data-table-wrapper">
+                            <table class="data-table" id="returns-purchases-table">
+                                <thead>
+                                    <tr>
+                                        <th>No. Retur</th>
+                                        <th>Tanggal</th>
+                                        <th>No. PO</th>
+                                        <th>Vendor</th>
+                                        <th style="text-align: center;">Item</th>
+                                        <th>Alasan</th>
+                                        <th class="th-returns-finance" style="text-align: right;">Nilai Retur</th>
+                                        <th style="text-align: right;">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="returns-purchases-body">
+                                    <!-- Rendered by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="empty-state" id="returns-purchases-empty" style="display:none;">
+                            <i data-lucide="rotate-ccw"></i>
+                            <p>Belum ada data retur pembelian.</p>
+                        </div>
+                        <div id="pagination-returns-purchases" class="pagination-container"></div>
+                    </div>
+                </section>
+
+                <!-- ============================================================
+                 PAGE: STOCK MOVE (B4.2)
+                 ============================================================ -->
+                <section class="page-section" id="page-stock-moves">
+                    <div class="page-toolbar" style="flex-wrap: wrap; gap: 0.75rem;">
+                        <div class="page-toolbar-left" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                            <div class="toolbar-search">
+                                <i data-lucide="search"></i>
+                                <input type="text" placeholder="Cari nama produk, SKU, ref..." id="stock-moves-search" oninput="debounceStockMovesSearch()">
+                            </div>
+                            <select id="stock-moves-filter-type" class="form-input" style="padding: 0.45rem 0.75rem; font-size: 0.85rem;" onchange="loadStockMoves(1)">
+                                <option value="all">Semua Tipe</option>
+                                <option value="penjualan">Penjualan</option>
+                                <option value="pembelian">Pembelian</option>
+                                <option value="opname">Opname</option>
+                                <option value="retur_penjualan">Retur Penjualan</option>
+                                <option value="retur_penjualan_rusak">Retur Rusak</option>
+                                <option value="retur_pembelian">Retur Pembelian</option>
+                                <option value="cancel_invoice">Cancel Invoice</option>
+                                <option value="koreksi_edit">Koreksi Edit</option>
+                                <option value="stok_awal">Stok Awal</option>
+                            </select>
+                        </div>
+                        <div class="page-toolbar-right" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem;">
+                                <span>Dari:</span>
+                                <input type="date" id="stock-moves-date-from" class="form-input" style="padding: 0.35rem 0.5rem; font-size: 0.85rem;" onchange="loadStockMoves(1)">
+                                <span>s/d</span>
+                                <input type="date" id="stock-moves-date-to" class="form-input" style="padding: 0.35rem 0.5rem; font-size: 0.85rem;" onchange="loadStockMoves(1)">
+                            </div>
+                            <button class="btn-toolbar secondary" onclick="resetStockMovesFilter()">
+                                <i data-lucide="rotate-ccw"></i> Reset
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="data-table-wrapper">
+                        <table class="data-table" id="stock-moves-table">
+                            <thead>
+                                <tr>
+                                    <th>Tanggal & Waktu</th>
+                                    <th>Produk</th>
+                                    <th>Tipe</th>
+                                    <th>No. Referensi</th>
+                                    <th style="text-align: right;">Qty Masuk</th>
+                                    <th style="text-align: right;">Qty Keluar</th>
+                                    <th style="text-align: right;">Stok Sesudah</th>
+                                    <th>Keterangan</th>
+                                    <th>Petugas</th>
+                                </tr>
+                            </thead>
+                            <tbody id="stock-moves-body">
+                                <!-- Rendered by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="empty-state" id="stock-moves-empty" style="display:none;">
+                        <i data-lucide="boxes"></i>
+                        <p>Belum ada data pergerakan stok.</p>
+                    </div>
+                    <div id="pagination-stock-moves" class="pagination-container"></div>
+                </section>
             </div><!-- /content-area -->
         </div><!-- /main-content -->
     </div><!-- /dashboard-wrapper -->
@@ -1830,27 +2025,75 @@
             <div class="modal-body">
                 <div class="form-group">
                     <label>Produk</label>
-                    <input type="text" class="form-input" value="Kopi Arabica 250g" disabled>
+                    <input type="text" id="stock-opname-name" class="form-input" value="" disabled>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label>Stok Sistem Saat Ini</label>
-                        <input type="text" class="form-input" value="124" disabled>
+                        <input type="text" id="stock-opname-stock" class="form-input" value="0" disabled>
                     </div>
                     <div class="form-group">
                         <label>Stok Fisik (Aktual)</label>
-                        <input type="number" class="form-input" placeholder="0">
+                        <input type="number" id="stock-opname-actual" class="form-input" placeholder="0">
                     </div>
                 </div>
                 <div class="form-group">
                     <label>Keterangan Penyesuaian</label>
-                    <textarea class="form-input" placeholder="Contoh: Barang rusak, hilang, dsb"></textarea>
+                    <textarea id="stock-opname-note" class="form-input" placeholder="Contoh: Barang rusak, hilang, dsb"></textarea>
                 </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-stock-opname')">Batal</button>
                 <button class="btn-toolbar primary" onclick="submitStockOpname()"><i data-lucide="save"></i> Sesuaikan
                     Stok</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Konfirmasi Nonaktifkan Produk (A2.2) -->
+    <div class="modal-overlay" id="modal-confirm-deactivate-product">
+        <div class="modal" style="max-width: 480px;">
+            <div class="modal-header">
+                <h3>Konfirmasi Nonaktifkan Produk</h3>
+                <button class="modal-close" onclick="closeModal('modal-confirm-deactivate-product')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="deactivate-product-id">
+                <div id="deactivate-product-stock-warning" style="display:none; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 6px; background: #fffbeb; border: 1px solid #fef3c7; color: #b45309; font-size: 0.875rem;">
+                    <div style="font-weight: 700; display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem;">
+                        <i data-lucide="alert-triangle" style="width: 16px; height: 16px;"></i> Peringatan Stok Masih Ada
+                    </div>
+                    <div id="deactivate-product-warning-text"></div>
+                </div>
+                <p id="deactivate-product-message" style="margin: 0; color: var(--gray-600); font-size: 0.9rem; line-height: 1.5;"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-confirm-deactivate-product')">Batal</button>
+                <button class="btn-toolbar warning" id="btn-confirm-deactivate-product" onclick="executeDeactivateProduct()"><i data-lucide="eye-off"></i> Ya, Nonaktifkan</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Konfirmasi Hapus Produk (A2.1) -->
+    <div class="modal-overlay" id="modal-confirm-delete-product">
+        <div class="modal" style="max-width: 480px;">
+            <div class="modal-header">
+                <h3>Hapus Produk</h3>
+                <button class="modal-close" onclick="closeModal('modal-confirm-delete-product')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="delete-product-id">
+                <div id="delete-product-pricelist-warning" style="display:none; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 6px; background: #fffbeb; border: 1px solid #fef3c7; color: #b45309; font-size: 0.875rem;">
+                    <div style="font-weight: 700; display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem;">
+                        <i data-lucide="alert-triangle" style="width: 16px; height: 16px;"></i> Terdaftar di Special Price
+                    </div>
+                    <div>Produk ini tercatat dalam daftar harga Special Price. Menghapus produk akan otomatis menghapus harga khusus terkait dari Special Price.</div>
+                </div>
+                <p id="delete-product-message" style="margin: 0; color: var(--gray-600); font-size: 0.9rem; line-height: 1.5;"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-confirm-delete-product')">Batal</button>
+                <button class="btn-toolbar danger" id="btn-confirm-delete-product" onclick="executeDeleteProduct()"><i data-lucide="trash-2"></i> Ya, Hapus</button>
             </div>
         </div>
     </div>
@@ -2021,9 +2264,9 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Pricelist Khusus <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <label>Special Price Khusus <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
                         <select id="add-customer-pricelist" class="form-input">
-                            <option value="">Harga Master (tanpa pricelist)</option>
+                            <option value="">Harga Master (tanpa special price)</option>
                             <!-- Populated by JS -->
                         </select>
                     </div>
@@ -2127,9 +2370,9 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Pricelist Khusus <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
+                        <label>Special Price Khusus <span style="color:var(--gray-400);font-size:0.75rem;">(opsional)</span></label>
                         <select id="edit-customer-pricelist" class="form-input">
-                            <option value="">Harga Master (tanpa pricelist)</option>
+                            <option value="">Harga Master (tanpa special price)</option>
                             <!-- Populated by JS -->
                         </select>
                     </div>
@@ -2234,7 +2477,7 @@
                     </div>
                     <div class="entity-detail"
                         style="display: flex; justify-content: space-between; font-size: 0.875rem;">
-                        <span class="entity-detail-label" style="color: var(--gray-500);">Pricelist Khusus</span>
+                        <span class="entity-detail-label" style="color: var(--gray-500);">Special Price Khusus</span>
                         <span class="entity-detail-value" id="detail-customer-pricelist" style="font-weight: 600;"></span>
                     </div>
                     <div class="entity-detail"
@@ -2303,14 +2546,14 @@
                         <span id="detail-customer-total-belanja"
                             style="font-weight: 700; color: var(--gray-800);"></span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; font-size: 0.875rem;">
+                    <div id="detail-customer-piutang-row" style="display: flex; justify-content: space-between; font-size: 0.875rem;">
                         <span style="color: var(--gray-500);">Piutang Berjalan</span>
                         <span id="detail-customer-piutang-berjalan"
                             style="font-weight: 700; color: var(--rose-600);"></span>
                     </div>
                 </div>
 
-                <div
+                <div id="detail-customer-limit-container"
                     style="margin-top: 1.25rem; border: 1px solid var(--gray-200); border-radius: 0.75rem; padding: 1rem;">
                     <div
                         style="display: flex; justify-content: space-between; font-size: 0.875rem; color: var(--gray-600); margin-bottom: 0.5rem;">
@@ -2501,10 +2744,11 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label>Vendor</label>
-                        <select id="add-purchase-vendor" class="form-input">
-                            <option value="" disabled selected>— Pilih Vendor —</option>
-                            <!-- Populated by JS -->
-                        </select>
+                        <div id="add-purchase-vendor-container" class="combobox-container">
+                            <input type="text" id="add-purchase-vendor-input" class="form-input combobox-input" placeholder="Cari nama atau kode vendor..." autocomplete="off">
+                            <input type="hidden" id="add-purchase-vendor" value="">
+                            <div id="add-purchase-vendor-dropdown" class="combobox-dropdown"></div>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Tipe Pembayaran</label>
@@ -2715,6 +2959,11 @@
                         onclick="cancelPurchaseFromEdit()">
                         <i data-lucide="x-circle"></i> Batalkan PO
                     </button>
+                    <button class="btn-toolbar warning" id="btn-edit-purchase-return"
+                        style="background: #f59e0b; border-color: #f59e0b; color: white; margin-left: 0.5rem;"
+                        onclick="openPurchaseReturnFromEditPurchase()">
+                        <i data-lucide="rotate-ccw"></i> Retur
+                    </button>
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn-toolbar secondary" onclick="closeModal('modal-edit-purchase')">Discard</button>
@@ -2727,28 +2976,52 @@
 
     <!-- Cancel Purchase Modal -->
     <div class="modal-overlay" id="modal-cancel-purchase">
-        <div class="modal" style="max-width: 400px;">
+        <div class="modal" style="max-width: 440px;">
             <div class="modal-header">
                 <h3>Batalkan Purchase Order</h3>
                 <button class="modal-close" onclick="closeModal('modal-cancel-purchase')"><i
                         data-lucide="x"></i></button>
             </div>
             <div class="modal-body">
-                <p style="color: var(--gray-700); margin-bottom: 1rem;">
-                    Apakah Anda yakin ingin membatalkan Purchase Order <strong>PO-2026-018</strong>?
+                <input type="hidden" id="cancel-purchase-id">
+                <input type="hidden" id="cancel-purchase-paid">
+                <p id="cancel-purchase-text" style="color: var(--gray-700); margin-bottom: 1rem;">
+                    Apakah Anda yakin ingin membatalkan Purchase Order ini?
                 </p>
+                <div id="cancel-purchase-alert-paid" style="display: none; margin-bottom: 1rem; font-size: 0.875rem; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 0.75rem; border-radius: 0.5rem; line-height: 1.4;">
+                    <i data-lucide="alert-triangle" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle; margin-right: 0.25rem;"></i>
+                    <span id="cancel-purchase-alert-paid-text"></span>
+                </div>
                 <p
-                    style="font-size: 0.875rem; color: var(--rose-600); background: var(--rose-50); padding: 0.75rem; border-radius: 0.5rem;">
+                    style="font-size: 0.85rem; color: var(--rose-600); background: var(--rose-50); padding: 0.75rem; border-radius: 0.5rem;">
                     <i data-lucide="alert-triangle"
                         style="width: 16px; height: 16px; display: inline-block; vertical-align: middle; margin-right: 0.25rem;"></i>
-                    PO yang dibatalkan tidak akan memengaruhi stok dan laporan hutang. Aksi ini tidak dapat dihapus
-                    permanen untuk keperluan riwayat audit.
+                    PO yang dibatalkan akan memulihkan stok dan status diubah menjadi Batal. Aksi ini tidak dapat dihapus permanen untuk riwayat audit.
                 </p>
             </div>
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-cancel-purchase')">Kembali</button>
-                <button class="btn-toolbar primary" style="background: #e11d48; color: white; border-color: #e11d48;"
+                <button class="btn-toolbar primary" id="btn-confirm-cancel-po" style="background: #e11d48; color: white; border-color: #e11d48;"
                     onclick="confirmCancelPurchase()"><i data-lucide="x-circle"></i> Ya, Batalkan</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Soft-lock: Confirm Edit PO with Active Payments -->
+    <div class="modal-overlay" id="modal-confirm-edit-purchase">
+        <div class="modal" style="max-width: 450px;">
+            <div class="modal-header">
+                <h3>Konfirmasi Perubahan PO</h3>
+                <button class="modal-close" onclick="closeModal('modal-confirm-edit-purchase')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 20px; line-height: 1.5; color: var(--gray-700);">
+                <p id="confirm-edit-purchase-desc">PO ini sudah memiliki pembayaran aktif. Perubahan total PO akan mempengaruhi sisa hutang.</p>
+                <div id="confirm-edit-purchase-stats" style="margin-top: 12px; padding: 12px; background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 6px; font-size: 0.875rem;">
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 16px 20px; border-top: 1px solid var(--gray-200); display: flex; justify-content: flex-end; gap: 12px;">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-confirm-edit-purchase')">Batalkan</button>
+                <button class="btn-toolbar primary" onclick="executeSavePurchaseEdits()"><i data-lucide="check"></i> Lanjutkan Simpan</button>
             </div>
         </div>
     </div>
@@ -3120,6 +3393,172 @@
         </div>
     </div>
 
+    <!-- Hutang Payment History Modal (Rincian Cicilan Hutang) -->
+    <div class="modal-overlay" id="modal-hutang-payment-history">
+        <div class="modal" style="max-width: 840px; width: 95%;">
+            <div class="modal-header">
+                <div>
+                    <h3 style="margin: 0;">Riwayat Pembayaran Cicilan Hutang</h3>
+                    <small style="color: var(--gray-500);" id="hist-po-subtitle">PO: -</small>
+                </div>
+                <button class="modal-close" onclick="closeModal('modal-hutang-payment-history')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 1.25rem;">
+                <!-- Summary Card Row -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 1.25rem;">
+                    <div style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px 14px;">
+                        <div style="font-size: 0.72rem; color: var(--gray-500); text-transform: uppercase; font-weight: 600;">Total PO</div>
+                        <div style="font-size: 1.1rem; font-weight: 700; color: var(--gray-900);" id="hist-po-total-display">Rp 0</div>
+                    </div>
+                    <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px 14px;">
+                        <div style="font-size: 0.72rem; color: #166534; text-transform: uppercase; font-weight: 600;">Sudah Dibayar</div>
+                        <div style="font-size: 1.1rem; font-weight: 700; color: #15803d;" id="hist-po-paid-display">Rp 0</div>
+                    </div>
+                    <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 14px;">
+                        <div style="font-size: 0.72rem; color: #991b1b; text-transform: uppercase; font-weight: 600;">Sisa Hutang</div>
+                        <div style="font-size: 1.1rem; font-weight: 700; color: #b91c1c;" id="hist-po-sisa-display">Rp 0</div>
+                    </div>
+                    <div style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px 14px;">
+                        <div style="font-size: 0.72rem; color: var(--gray-500); text-transform: uppercase; font-weight: 600;">Jatuh Tempo</div>
+                        <div style="font-size: 0.95rem; font-weight: 600; color: var(--gray-800);" id="hist-po-due-display">-</div>
+                        <div id="hist-po-overdue-badge-wrap" style="margin-top: 4px;"></div>
+                    </div>
+                </div>
+
+                <!-- Payments Table -->
+                <div class="data-table-wrapper" style="max-height: 320px; overflow-y: auto;">
+                    <table class="data-table" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>No. Bukti</th>
+                                <th>Tanggal</th>
+                                <th>Nominal</th>
+                                <th>Metode</th>
+                                <th>Tipe</th>
+                                <th>Catatan</th>
+                                <th>Status</th>
+                                <th>Pencatat</th>
+                                <th style="text-align: right;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="hist-po-payments-body">
+                            <!-- Filled by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                <div id="hist-po-footer-left">
+                    <button class="btn-toolbar primary" id="btn-hist-po-pay-now" style="font-size: 0.82rem;" onclick="triggerPayFromHutangHistory()"><i data-lucide="plus"></i> Input Pembayaran Baru</button>
+                </div>
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-hutang-payment-history')">Tutup</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Void Hutang Payment Confirmation Modal -->
+    <div class="modal-overlay" id="modal-void-hutang-payment">
+        <div class="modal" style="max-width: 440px;">
+            <div class="modal-header">
+                <h3>Batalkan Pembayaran Hutang (Void)</h3>
+                <button class="modal-close" onclick="closeModal('modal-void-hutang-payment')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 1.25rem;">
+                <div id="void-hutang-payment-info-box" style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 6px; padding: 12px; margin-bottom: 1rem; font-size: 0.875rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--gray-600);">No. Bukti:</span> <b id="void-hutang-info-no">-</b>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--gray-600);">Nominal:</span> <b id="void-hutang-info-amount" style="color: var(--rose-600);">-</b>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: var(--gray-600);">Tanggal:</span> <span id="void-hutang-info-date">-</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label style="font-weight: 600; color: var(--gray-800);">Alasan Pembatalan <span style="color: var(--rose-600);">*</span></label>
+                    <textarea id="void-hutang-payment-reason" class="form-input" rows="3" placeholder="Contoh: Salah transfer / salah catat vendor..."></textarea>
+                    <small style="color: var(--gray-500); font-size: 0.75rem;">Alasan wajib diisi untuk jejak audit pembukuan.</small>
+                </div>
+
+                <p style="font-size: 0.8rem; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 0.6rem; border-radius: 4px; margin: 0;">
+                    <i data-lucide="alert-triangle" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle;"></i>
+                    Void akan membalikkan catatan kas dan mengembalikan nilai ini ke sisa hutang PO.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-void-hutang-payment')">Batal</button>
+                <button class="btn-toolbar primary" id="btn-submit-void-hutang" style="background: #e11d48; border-color: #e11d48;" onclick="submitVoidHutangPayment()">
+                    <i data-lucide="trash-2"></i> Konfirmasi Void
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hutang Payment Input Modal -->
+    <div class="modal-overlay" id="modal-hutang-payment">
+        <div class="modal" style="max-width: 450px;">
+            <div class="modal-header">
+                <h3>Input Pembayaran Cicilan Hutang</h3>
+                <button class="modal-close" onclick="closeModal('modal-hutang-payment')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="hutang-payment-po-id">
+
+                <!-- Dynamic PO summary box -->
+                <div id="hutang-payment-po-info-box" style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 6px; padding: 12px; margin-bottom: 1rem; font-size: 0.85rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--gray-600);">No. PO:</span> <b id="hutang-payment-info-id">-</b>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--gray-600);">Vendor:</span> <span id="hutang-payment-info-vendor">-</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--gray-600);">Total PO:</span> <span id="hutang-payment-info-total">-</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: var(--gray-600); font-weight: 600;">Sisa Hutang:</span> <b id="hutang-payment-info-sisa" style="color: var(--rose-600);">-</b>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Tanggal Pembayaran</label>
+                    <input type="date" class="form-input" id="hutang-payment-date">
+                </div>
+
+                <div class="form-group">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <label style="margin: 0;">Jumlah Pembayaran (Rp) <span style="color: var(--rose-600);">*</span></label>
+                        <button type="button" id="btn-pay-full-hutang" style="background: none; border: none; color: var(--blue-600); font-size: 0.75rem; font-weight: 600; cursor: pointer; padding: 0;" onclick="fillFullHutangPayment()">Bayar Lunas</button>
+                    </div>
+                    <input type="number" class="form-input" placeholder="0" id="hutang-payment-amount" min="1">
+                    <div id="hutang-payment-max-hint" style="font-size: 0.75rem; color: var(--gray-500); margin-top: 3px;"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Metode Pembayaran</label>
+                    <select id="hutang-payment-method" class="form-input">
+                        <option value="Transfer Bank" selected>Transfer Bank</option>
+                        <option value="Tunai">Tunai</option>
+                        <option value="Giro / Cek">Giro / Cek</option>
+                        <option value="Lainnya">Lainnya</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Catatan Pembayaran</label>
+                    <input type="text" id="hutang-payment-notes" class="form-input" placeholder="Opsional (mis. Cicilan 1 / Transfer Mandiri)">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-hutang-payment')">Batal</button>
+                <button class="btn-toolbar primary" id="btn-submit-hutang-payment" onclick="submitHutangPayment()"><i data-lucide="check"></i>
+                    Konfirmasi Pembayaran</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Edit Invoice Modal -->
     <div class="modal-overlay" id="modal-edit-invoice">
         <div class="modal" style="max-width: 800px;">
@@ -3147,16 +3586,18 @@
 
                 <!-- Products List -->
                 <hr style="border: 0; border-top: 1px dashed var(--gray-200); margin: 1rem 0;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <label style="margin-bottom: 0; font-weight: 600;">Daftar Item</label>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <select id="edit-invoice-product-select" class="form-input" style="width: 200px;">
-                            <!-- Filled by JS -->
-                        </select>
-                        <button type="button" class="btn-toolbar secondary"
-                            style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="addEditInvoiceItem()"><i
-                                data-lucide="plus"></i> Tambah Item</button>
+                <div style="margin-bottom: 1rem;">
+                    <label style="margin-bottom: 0.5rem; font-weight: 600; display: block;">Daftar Item</label>
+                    <div id="edit-invoice-search-wrapper" style="position: relative; max-width: 380px;">
+                        <div style="position: relative; display: flex; align-items: center;">
+                            <i data-lucide="search" style="position: absolute; left: 0.75rem; width: 16px; height: 16px; color: var(--gray-400); pointer-events: none;"></i>
+                            <input type="text" id="edit-invoice-product-search" class="form-input"
+                                placeholder="Ketik nama atau kode produk untuk menambah..."
+                                autocomplete="off"
+                                style="padding: 0.5rem 0.75rem 0.5rem 2.25rem; font-size: 0.85rem; width: 100%; border-radius: 6px; background: white; border: 1px solid var(--gray-300);">
+                        </div>
                     </div>
+                    <div id="edit-invoice-product-dropdown" class="po-autocomplete-dropdown" style="display: none;"></div>
                 </div>
 
                 <div
@@ -3232,9 +3673,13 @@
             </div>
             <div class="modal-footer" style="justify-content: space-between; align-items: center;">
                 <div>
-                    <button class="btn-toolbar danger"
+                    <button class="btn-toolbar danger" id="btn-edit-invoice-cancel"
                         onclick="cancelInvoice()">
                         <i data-lucide="x-circle"></i> Cancel Invoice
+                    </button>
+                    <button class="btn-toolbar warning" id="btn-edit-invoice-return" style="background: #f59e0b; color: white; border: none; margin-left: 0.5rem;"
+                        onclick="openSalesReturnFromEditInvoice()">
+                        <i data-lucide="rotate-ccw"></i> Retur
                     </button>
                 </div>
                 <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -3485,8 +3930,7 @@
             </div>
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-delete-master')">Batal</button>
-                <button class="btn-toolbar primary" id="btn-confirm-delete-master"
-                    style="background: var(--rose-600); color: white; border-color: var(--rose-600);"
+                <button class="btn-toolbar danger" id="btn-confirm-delete-master"
                     onclick="confirmDeleteMaster()">
                     <i data-lucide="trash-2"></i> Ya, Hapus
                 </button>
@@ -3682,29 +4126,29 @@
     </div>
 
     <!-- ============================================================
-     PRICELIST MODALS
+     SPECIAL PRICE MODALS
      ============================================================ -->
 
     <!-- Modal Create Pricelist -->
     <div class="modal-overlay" id="modal-create-pricelist">
         <div class="modal" style="max-width: 500px;">
             <div class="modal-header">
-                <h3>Buat Pricelist Baru</h3>
+                <h3>Buat Special Price Baru</h3>
                 <button class="modal-close" onclick="closeModal('modal-create-pricelist')"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label>Nama Pricelist <span style="color: var(--rose-500);">*</span></label>
+                    <label>Nama Special Price <span style="color: var(--rose-500);">*</span></label>
                     <input type="text" id="create-pl-nama" class="form-input" placeholder="Contoh: VIP Gold, Grosir Jawa Timur, Reseller A">
                 </div>
                 <div class="form-group">
                     <label>Keterangan <span style="color: var(--gray-400); font-size: 0.75rem;">(opsional)</span></label>
-                    <textarea id="create-pl-keterangan" class="form-input" rows="3" placeholder="Catatan atau ketentuan khusus pricelist ini"></textarea>
+                    <textarea id="create-pl-keterangan" class="form-input" rows="3" placeholder="Catatan atau ketentuan khusus special price ini"></textarea>
                 </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-create-pricelist')">Batal</button>
-                <button class="btn-toolbar primary" onclick="submitCreatePricelist()"><i data-lucide="save"></i> Buat Pricelist</button>
+                <button class="btn-toolbar primary" onclick="submitCreatePricelist()"><i data-lucide="save"></i> Buat Special Price</button>
             </div>
         </div>
     </div>
@@ -3713,17 +4157,17 @@
     <div class="modal-overlay" id="modal-edit-pricelist">
         <div class="modal" style="max-width: 500px;">
             <div class="modal-header">
-                <h3>Edit Informasi Pricelist</h3>
+                <h3>Edit Informasi Special Price</h3>
                 <button class="modal-close" onclick="closeModal('modal-edit-pricelist')"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body">
                 <input type="hidden" id="edit-pl-id">
                 <div class="form-group">
-                    <label>Kode Pricelist</label>
+                    <label>Kode Special Price</label>
                     <input type="text" id="edit-pl-kode-display" class="form-input" disabled style="background: var(--gray-100);">
                 </div>
                 <div class="form-group">
-                    <label>Nama Pricelist <span style="color: var(--rose-500);">*</span></label>
+                    <label>Nama Special Price <span style="color: var(--rose-500);">*</span></label>
                     <input type="text" id="edit-pl-nama" class="form-input">
                 </div>
                 <div class="form-group">
@@ -3749,16 +4193,16 @@
     <div class="modal-overlay" id="modal-duplicate-pricelist">
         <div class="modal" style="max-width: 480px;">
             <div class="modal-header">
-                <h3>Duplikat Pricelist</h3>
+                <h3>Duplikat Special Price</h3>
                 <button class="modal-close" onclick="closeModal('modal-duplicate-pricelist')"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body">
                 <input type="hidden" id="duplicate-pl-id">
                 <p style="font-size: 0.875rem; color: var(--gray-600); margin-bottom: 1rem;">
-                    Seluruh item dan harga dari pricelist ini akan disalin ke pricelist baru.
+                    Seluruh item dan harga dari special price ini akan disalin ke special price baru.
                 </p>
                 <div class="form-group">
-                    <label>Nama Pricelist Baru <span style="color: var(--rose-500);">*</span></label>
+                    <label>Nama Special Price Baru <span style="color: var(--rose-500);">*</span></label>
                     <input type="text" id="duplicate-pl-nama" class="form-input">
                 </div>
             </div>
@@ -3780,7 +4224,7 @@
                 <input type="hidden" id="deactivate-pl-id">
                 <div style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
                     <p id="deactivate-pl-message" style="margin: 0; color: #92400e; font-size: 0.875rem; line-height: 1.5;">
-                        Pricelist ini sedang digunakan oleh pelanggan.
+                        Special Price ini sedang digunakan oleh pelanggan.
                     </p>
                 </div>
                 <p style="font-size: 0.85rem; color: var(--gray-600); margin: 0;">
@@ -3798,7 +4242,7 @@
     <div class="modal-overlay" id="modal-add-pricelist-products">
         <div class="modal" style="max-width: 780px;">
             <div class="modal-header">
-                <h3>Tambah Produk ke Pricelist</h3>
+                <h3>Tambah Produk ke Special Price</h3>
                 <button class="modal-close" onclick="closeModal('modal-add-pricelist-products')"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body">
@@ -3851,7 +4295,7 @@
                 <span id="add-pl-selected-count" style="font-size: 0.85rem; color: var(--gray-600); font-weight: 500;">0 produk dipilih</span>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn-toolbar secondary" onclick="closeModal('modal-add-pricelist-products')">Batal</button>
-                    <button class="btn-toolbar primary" onclick="submitAddPricelistProducts()"><i data-lucide="check"></i> Tambahkan ke Pricelist</button>
+                    <button class="btn-toolbar primary" onclick="submitAddPricelistProducts()"><i data-lucide="check"></i> Tambahkan ke Special Price</button>
                 </div>
             </div>
         </div>
@@ -3861,7 +4305,7 @@
     <div class="modal-overlay" id="modal-import-pricelist-csv">
         <div class="modal" style="max-width: 750px;">
             <div class="modal-header">
-                <h3>Import Harga Pricelist dari CSV</h3>
+                <h3>Import Harga Special Price dari CSV</h3>
                 <button class="modal-close" onclick="closeModal('modal-import-pricelist-csv')"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body">
@@ -3935,7 +4379,7 @@
                     <label>Terapkan untuk:</label>
                     <select id="bulk-percent-target" class="form-input">
                         <option value="selected">Hanya produk yang dicentang di tabel</option>
-                        <option value="all">Semua produk dalam pricelist ini</option>
+                        <option value="all">Semua produk dalam special price ini</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -3964,9 +4408,6 @@
         </div>
     </div>
 
-    <!-- Application Script -->
-    <script src="dashboard.js?v=8"></script>
-
     <!-- Modal Delete Outstanding Invoice -->
     <div class="modal-overlay" id="modal-delete-outstanding">
         <div class="modal" style="max-width: 450px;">
@@ -3992,6 +4433,37 @@
             <div class="modal-footer">
                 <button class="btn-toolbar secondary" onclick="closeModal('modal-delete-outstanding')">Batal</button>
                 <button class="btn-toolbar primary" id="btn-confirm-delete-outstanding" style="background: #e11d48; color: white; border-color: #e11d48;" onclick="executeDeleteOutstandingInvoice()">
+                    <i data-lucide="trash-2"></i> Ya, Hapus
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Delete Outstanding Hutang PO -->
+    <div class="modal-overlay" id="modal-delete-outstanding-hutang">
+        <div class="modal" style="max-width: 450px;">
+            <div class="modal-header">
+                <h3>Hapus Hutang Outstanding</h3>
+                <button class="modal-close" onclick="closeModal('modal-delete-outstanding-hutang')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="delete-outstanding-hutang-id">
+                <input type="hidden" id="delete-outstanding-hutang-paid">
+                <p id="delete-outstanding-hutang-text" style="color: var(--gray-700); margin-bottom: 1rem;">
+                    Apakah Anda yakin ingin menghapus hutang outstanding ini?
+                </p>
+                <div id="delete-outstanding-hutang-alert" style="display: none; margin-bottom: 1rem; font-size: 0.875rem; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 0.75rem; border-radius: 0.5rem; line-height: 1.4;">
+                    <i data-lucide="alert-triangle" style="width: 16px; height: 16px; display: inline-block; vertical-align: middle; margin-right: 0.25rem;"></i>
+                    <span id="delete-outstanding-hutang-alert-text"></span>
+                </div>
+                <p style="font-size: 0.825rem; color: var(--gray-500); background: var(--gray-50); padding: 0.5rem 0.75rem; border-radius: 0.375rem; border: 1px solid var(--gray-200);">
+                    <i data-lucide="info" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 0.25rem;"></i>
+                    Penghapusan hutang outstanding tidak memengaruhi stok master produk.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-delete-outstanding-hutang')">Batal</button>
+                <button class="btn-toolbar primary" id="btn-confirm-delete-outstanding-hutang" style="background: #e11d48; color: white; border-color: #e11d48;" onclick="executeDeleteOutstandingHutang()">
                     <i data-lucide="trash-2"></i> Ya, Hapus
                 </button>
             </div>
@@ -4091,6 +4563,316 @@
         </div>
     </div>
 
+    <!-- Modal Retur Penjualan (B1) -->
+    <div class="modal-overlay" id="modal-sales-return">
+        <div class="modal" style="max-width: 840px; width: 95%;">
+            <div class="modal-header">
+                <h3><i data-lucide="rotate-ccw" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 6px; color: var(--amber-600);"></i> Form Retur Penjualan</h3>
+                <button class="modal-close" onclick="closeModal('modal-sales-return')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 1.25rem;">
+                <input type="hidden" id="sales-return-invoice-id">
+                
+                <div style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 0.85rem; margin-bottom: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; font-size: 0.875rem;">
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">No. Invoice</span>
+                        <strong id="sales-return-inv-number">-</strong>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Tanggal Invoice</span>
+                        <span id="sales-return-inv-date">-</span>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Pelanggan</span>
+                        <strong id="sales-return-customer">-</strong>
+                    </div>
+                    <div id="sales-return-sisa-piutang-container">
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Sisa Piutang Saat Ini</span>
+                        <span id="sales-return-sisa-piutang" style="font-weight: 600; color: var(--rose-600);">-</span>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 0.75rem; margin-bottom: 1rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label style="font-weight: 600; font-size: 0.82rem; margin-bottom: 4px; display: block;">
+                            Tanggal Retur <span style="color: var(--rose-500);">*</span>
+                        </label>
+                        <input type="date" id="sales-return-date" class="form-input" style="width: 100%;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label style="font-weight: 600; font-size: 0.82rem; margin-bottom: 4px; display: block;">
+                            Alasan Retur <span style="color: var(--rose-500);">*</span>
+                        </label>
+                        <input type="text" id="sales-return-reason" class="form-input" placeholder="Contoh: Barang cacat, salah kirim ukuran..." style="width: 100%;">
+                    </div>
+                </div>
+
+                <div class="data-table-wrapper" style="max-height: 280px; overflow-y: auto; margin-bottom: 1rem;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Produk</th>
+                                <th style="text-align: right; width: 75px;">Qty Terjual</th>
+                                <th style="text-align: right; width: 75px;">Sdh Retur</th>
+                                <th style="text-align: right; width: 75px;">Maks Retur</th>
+                                <th style="text-align: right; width: 100px;">Qty Retur</th>
+                                <th style="width: 170px;">Kondisi Barang</th>
+                                <th class="th-sales-return-finance" style="text-align: right; width: 120px;">Subtotal Retur</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sales-return-items-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Kalkulasi Realtime -->
+                <div id="sales-return-summary-box" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem; font-size: 0.85rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span>Total Nilai Retur Bruto:</span>
+                        <strong id="sales-return-sum-subtotal">Rp 0</strong>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: var(--gray-600);">
+                        <span>Penyesuaian Diskon & PPN Invoice:</span>
+                        <span id="sales-return-sum-adj">Rp 0</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; border-top: 1px dashed #cbd5e1; padding-top: 4px; font-size: 0.95rem;">
+                        <strong>Total Pengembalian Dana:</strong>
+                        <strong id="sales-return-sum-total" style="color: var(--amber-700);">Rp 0</strong>
+                    </div>
+                    <div id="sales-return-alloc-container" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; background: white; padding: 0.5rem; border-radius: 6px; border: 1px solid #e2e8f0;">
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--gray-500); display: block;">Mengurangi Piutang:</span>
+                            <strong id="sales-return-sum-piutang" style="color: var(--blue-600);">Rp 0</strong>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--gray-500); display: block;">Masuk Deposit Pelanggan:</span>
+                            <strong id="sales-return-sum-deposit" style="color: var(--emerald-600);">Rp 0</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 1rem 1.25rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-sales-return')">Batal</button>
+                <button class="btn-toolbar primary" id="btn-submit-sales-return" style="background: var(--amber-600); border-color: var(--amber-600);" onclick="submitSalesReturn()">
+                    <i data-lucide="check-circle"></i> Simpan Retur Penjualan
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Retur Pembelian (B2) -->
+    <div class="modal-overlay" id="modal-purchase-return">
+        <div class="modal" style="max-width: 840px; width: 95%;">
+            <div class="modal-header">
+                <h3><i data-lucide="rotate-ccw" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 6px; color: var(--blue-600);"></i> Form Retur Pembelian</h3>
+                <button class="modal-close" onclick="closeModal('modal-purchase-return')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 1.25rem;">
+                <input type="hidden" id="purchase-return-po-id">
+                
+                <div style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 0.85rem; margin-bottom: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; font-size: 0.875rem;">
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">No. PO</span>
+                        <strong id="purchase-return-po-number">-</strong>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Tanggal PO</span>
+                        <span id="purchase-return-po-date">-</span>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Vendor</span>
+                        <strong id="purchase-return-vendor">-</strong>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Sisa Hutang Saat Ini</span>
+                        <span id="purchase-return-sisa-hutang" style="font-weight: 600; color: var(--rose-600);">-</span>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 0.75rem; margin-bottom: 1rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label style="font-weight: 600; font-size: 0.82rem; margin-bottom: 4px; display: block;">
+                            Tanggal Retur <span style="color: var(--rose-500);">*</span>
+                        </label>
+                        <input type="date" id="purchase-return-date" class="form-input" style="width: 100%;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label style="font-weight: 600; font-size: 0.82rem; margin-bottom: 4px; display: block;">
+                            Alasan Retur <span style="color: var(--rose-500);">*</span>
+                        </label>
+                        <input type="text" id="purchase-return-reason" class="form-input" placeholder="Contoh: Barang cacat dari supplier, kemasan rusak..." style="width: 100%;">
+                    </div>
+                </div>
+
+                <div class="data-table-wrapper" style="max-height: 280px; overflow-y: auto; margin-bottom: 1rem;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Produk</th>
+                                <th style="text-align: right; width: 75px;">Qty Dibeli</th>
+                                <th style="text-align: right; width: 75px;">Sdh Retur</th>
+                                <th style="text-align: right; width: 75px;">Stok Ada</th>
+                                <th style="text-align: right; width: 75px;">Maks Retur</th>
+                                <th style="text-align: right; width: 100px;">Qty Retur</th>
+                                <th class="th-purchase-return-finance" style="text-align: right; width: 120px;">Subtotal Retur</th>
+                            </tr>
+                        </thead>
+                        <tbody id="purchase-return-items-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Kalkulasi Realtime -->
+                <div id="purchase-return-summary-box" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem; font-size: 0.85rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.95rem;">
+                        <strong>Total Pengembalian Dana:</strong>
+                        <strong id="purchase-return-sum-total" style="color: var(--blue-700);">Rp 0</strong>
+                    </div>
+                    <div id="sales-return-alloc-container" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; background: white; padding: 0.5rem; border-radius: 6px; border: 1px solid #e2e8f0;">
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--gray-500); display: block;">Mengurangi Hutang:</span>
+                            <strong id="purchase-return-sum-hutang" style="color: var(--amber-600);">Rp 0</strong>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--gray-500); display: block;">Masuk Deposit Vendor:</span>
+                            <strong id="purchase-return-sum-deposit" style="color: var(--emerald-600);">Rp 0</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 1rem 1.25rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-purchase-return')">Batal</button>
+                <button class="btn-toolbar primary" id="btn-submit-purchase-return" style="background: var(--blue-600); border-color: var(--blue-600);" onclick="submitPurchaseReturn()">
+                    <i data-lucide="check-circle"></i> Simpan Retur Pembelian
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Soft-Lock Warning (B3) -->
+    <div class="modal-overlay" id="modal-softlock-warning">
+        <div class="modal" style="max-width: 520px; width: 95%;">
+            <div class="modal-header">
+                <h3 style="color: var(--amber-600);"><i data-lucide="alert-triangle" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 6px;"></i> Peringatan Perubahan Data</h3>
+                <button class="modal-close" onclick="closeModal('modal-softlock-warning')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 1.25rem;">
+                <input type="hidden" id="softlock-target-type"> <!-- 'invoice' | 'purchase' -->
+                <div style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+                    <p style="margin: 0 0 0.5rem 0; font-weight: 600; color: #92400e; font-size: 0.9rem;">
+                        Pengurangan Qty atau Penghapusan Item Terdeteksi
+                    </p>
+                    <p style="margin: 0; color: #78350f; font-size: 0.85rem; line-height: 1.5;">
+                        Transaksi ini sudah memengaruhi pergerakan stok. Pengurangan kuantitas atau penghapusan barang seharusnya dicatat secara resmi melalui <b>Form Retur</b> agar audit stok tetap akurat.
+                    </p>
+                </div>
+
+                <div id="softlock-admin-koreksi-section" style="display: none; border-top: 1px solid var(--gray-200); padding-top: 1rem; margin-top: 1rem;">
+                    <label style="font-weight: 600; font-size: 0.82rem; margin-bottom: 4px; display: block; color: var(--gray-700);">
+                        Alasan Koreksi Salah Input <span style="color: var(--rose-500);">* (Minimal 10 karakter)</span>
+                    </label>
+                    <textarea id="softlock-koreksi-reason" class="form-input" rows="3" placeholder="Contoh: Koreksi salah ketik qty saat invoice dibuat kemarin oleh kasir..." style="width: 100%; font-size: 0.85rem;"></textarea>
+                    <small style="color: var(--gray-500); font-size: 0.72rem; display: block; margin-top: 3px;">
+                        Koreksi ini akan dicatat ke Stock Move dengan tipe <code>koreksi_edit</code> atas nama Anda.
+                    </small>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 1rem 1.25rem; display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap;">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-softlock-warning')">Batal</button>
+                <button class="btn-toolbar primary" id="btn-softlock-open-return" style="background: var(--amber-600); border-color: var(--amber-600);" onclick="handleSoftLockOpenReturn()">
+                    <i data-lucide="rotate-ccw"></i> Buka Form Retur (Disarankan)
+                </button>
+                <button class="btn-toolbar" id="btn-softlock-continue-koreksi" style="background: var(--gray-700); color: white; border-color: var(--gray-700); display: none;" onclick="handleSoftLockContinueKoreksi()">
+                    Lanjutkan Koreksi
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Detail Retur (B4.1) -->
+    <div class="modal-overlay" id="modal-return-detail">
+        <div class="modal" style="max-width: 780px; width: 95%;">
+            <div class="modal-header">
+                <h3><i data-lucide="file-text" style="width: 20px; height: 20px; vertical-align: middle; margin-right: 6px;"></i> Detail Dokumen Retur</h3>
+                <button class="modal-close" onclick="closeModal('modal-return-detail')"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 1.25rem;">
+                <div style="background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 0.85rem; margin-bottom: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; font-size: 0.875rem;">
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">No. Retur</span>
+                        <strong id="ret-detail-id">-</strong>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;">Tanggal</span>
+                        <span id="ret-detail-date">-</span>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;" id="ret-detail-ref-label">No. Referensi</span>
+                        <span id="ret-detail-ref-id">-</span>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500); display: block; font-size: 0.75rem;" id="ret-detail-party-label">Pelanggan / Vendor</span>
+                        <strong id="ret-detail-party">-</strong>
+                    </div>
+                </div>
+
+                <div style="background: white; border: 1px solid var(--gray-200); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem; font-size: 0.85rem;">
+                    <div style="margin-bottom: 0.35rem;">
+                        <span style="color: var(--gray-500);">Alasan Retur:</span>
+                        <span id="ret-detail-reason" style="font-weight: 500; margin-left: 6px;">-</span>
+                    </div>
+                    <div>
+                        <span style="color: var(--gray-500);">Dibuat Oleh:</span>
+                        <span id="ret-detail-creator" style="font-weight: 500; margin-left: 6px;">-</span>
+                    </div>
+                </div>
+
+                <div class="data-table-wrapper" style="max-height: 240px; overflow-y: auto; margin-bottom: 1rem;">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 40px; text-align: center;">#</th>
+                                <th>Produk</th>
+                                <th style="text-align: right; width: 80px;">Qty</th>
+                                <th style="width: 150px;">Kondisi</th>
+                                <th class="th-ret-detail-finance" style="text-align: right; width: 120px;">Harga Satuan</th>
+                                <th class="th-ret-detail-finance" style="text-align: right; width: 130px;">Subtotal</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ret-detail-items-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Financial breakdown for authorized roles only -->
+                <div id="ret-detail-finance-box" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.85rem; font-size: 0.85rem; display: none;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 0.95rem;">
+                        <strong>Total Nilai Retur:</strong>
+                        <strong id="ret-detail-total" style="color: var(--amber-700);">Rp 0</strong>
+                    </div>
+                    <div id="sales-return-alloc-container" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; background: white; padding: 0.5rem; border-radius: 6px; border: 1px solid #e2e8f0;">
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--gray-500); display: block;" id="ret-detail-debt-label">Dipotong ke Piutang:</span>
+                            <strong id="ret-detail-deducted" style="color: var(--blue-600);">Rp 0</strong>
+                        </div>
+                        <div>
+                            <span style="font-size: 0.75rem; color: var(--gray-500); display: block;" id="ret-detail-deposit-label">Masuk ke Deposit Pelanggan:</span>
+                            <strong id="ret-detail-deposit" style="color: var(--emerald-600);">Rp 0</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 1rem 1.25rem; display: flex; justify-content: flex-end;">
+                <button class="btn-toolbar secondary" onclick="closeModal('modal-return-detail')">Tutup</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script src="dashboard.js?v=12"></script>
 </body>
 
 </html>
