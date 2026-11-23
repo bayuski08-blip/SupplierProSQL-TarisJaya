@@ -48,7 +48,7 @@ function addPurchaseItemRow(containerId) {
     row.className = `form-row ${prefix}-purchase-item`;
     row.style.marginBottom = '0.5rem';
 
-    const productOptions = PRODUCTS.map(p => `<option value="${p.id}">${p.name} (Stok: ${p.stock})</option>`).join('');
+    const productOptions = PRODUCTS.map(p => `<option value="${p.id}">${p.name} (Stok: ${formatNumberTrim(p.stock)})</option>`).join('');
 
     row.innerHTML = `
         <div class="form-group" style="flex: 2;">
@@ -270,6 +270,10 @@ function notifyDataChange(type = 'general', payload = {}) {
 function handleSyncMessage(msg) {
     if (!msg || !msg.timestamp) return;
     console.log('[Sync] Received data change notification:', msg.type);
+
+    if (msg.type === 'settings') {
+        loadInvoicePreferences();
+    }
 
     if (currentPage === 'dashboard') {
         refreshDashboardData(true);
@@ -659,13 +663,14 @@ const PAGE_TITLES = {
     pricelists: { title: 'Special Price', subtitle: 'Kelola daftar harga khusus untuk pelanggan' },
     returns: { title: 'Daftar Retur', subtitle: 'Riwayat retur penjualan dan pembelian' },
     'stock-moves': { title: 'Stock Move', subtitle: 'Monitoring pergerakan fisik stok' },
+    conversions: { title: 'Konversi Produk', subtitle: 'Pecah atau gabung stok produk antar satuan' },
 };
 
 // ---------- Role Based Access Control (RBAC) ----------
 const ROLE_PERMISSIONS = {
-    admin: ['dashboard', 'pos', 'products', 'customers', 'vendors', 'purchases', 'proformas', 'invoices', 'piutang', 'hutang', 'cashflow', 'profitloss', 'balance', 'reports', 'settings', 'roles', 'master-data', 'customerfee', 'pricelists', 'returns', 'stock-moves'],
+    admin: ['dashboard', 'pos', 'products', 'customers', 'vendors', 'purchases', 'proformas', 'invoices', 'piutang', 'hutang', 'cashflow', 'profitloss', 'balance', 'reports', 'settings', 'roles', 'master-data', 'customerfee', 'pricelists', 'returns', 'stock-moves', 'conversions'],
     finance: ['dashboard', 'invoices', 'piutang', 'cashflow', 'profitloss', 'balance', 'reports', 'returns'],
-    gudang: ['dashboard', 'products', 'purchases', 'vendors', 'hutang', 'stock-moves', 'returns'],
+    gudang: ['dashboard', 'products', 'purchases', 'vendors', 'hutang', 'stock-moves', 'returns', 'conversions'],
     kasir: ['dashboard', 'pos', 'customers', 'proformas', 'invoices', 'pricelists', 'returns']
 };
 
@@ -717,6 +722,24 @@ function applyRoleRestrictions() {
     const canSeeFinance = role === 'admin' || role === 'finance' || role === 'owner';
     document.querySelectorAll('.th-returns-finance, .th-sales-return-finance, .th-purchase-return-finance, .th-ret-detail-finance').forEach(el => {
         el.style.display = canSeeFinance ? '' : 'none';
+    });
+
+    // Sembunyikan HPP untuk kasir
+    const canSeeHpp = role === 'admin' || role === 'owner' || role === 'gudang';
+    document.querySelectorAll('.th-product-hpp, .td-product-hpp, .form-group-product-cost').forEach(el => {
+        el.style.display = canSeeHpp ? '' : 'none';
+    });
+
+    // Sembunyikan Harga Jual untuk gudang
+    const canSeeSellPrice = role !== 'gudang';
+    document.querySelectorAll('.th-product-price, .td-product-price, .form-group-product-price').forEach(el => {
+        el.style.display = canSeeSellPrice ? '' : 'none';
+    });
+
+    // Sembunyikan nilai / HPP konversi untuk selain Admin (misal Gudang)
+    const canSeeConversionValue = role === 'admin' || role === 'owner';
+    document.querySelectorAll('.th-conversion-value, .td-conversion-value, .conversion-admin-value-field').forEach(el => {
+        el.style.display = canSeeConversionValue ? '' : 'none';
     });
 
     const recentStockCard = document.getElementById('dash-card-recent-stock-moves');
@@ -833,6 +856,9 @@ function navigateTo(page) {
     }
     if (page === 'stock-moves') {
         if (typeof loadStockMovesPage === 'function') loadStockMovesPage(1);
+    }
+    if (page === 'conversions') {
+        if (typeof loadConversionsPage === 'function') loadConversionsPage(1);
     }
 
     // Close mobile sidebar
@@ -1436,6 +1462,10 @@ document.getElementById('product-category-filter')?.addEventListener('change', (
     paginationState.products.page = 1;
     fetchProducts(1);
 });
+document.getElementById('product-sort')?.addEventListener('change', () => {
+    paginationState.products.page = 1;
+    fetchProducts(1);
+});
 
 // ---------- Customers Page ----------
 let customerViewMode = 'kanban';
@@ -1566,6 +1596,10 @@ document.getElementById('customer-type-filter')?.addEventListener('change', () =
     paginationState.customers.page = 1;
     fetchCustomers(1);
 });
+document.getElementById('customer-sort')?.addEventListener('change', () => {
+    paginationState.customers.page = 1;
+    fetchCustomers(1);
+});
 
 // Customer view toggle bindings
 document.addEventListener('DOMContentLoaded', () => {
@@ -1672,6 +1706,10 @@ document.getElementById('vendor-search')?.addEventListener('input', debounce(() 
     paginationState.vendors.page = 1;
     fetchVendors(1);
 }, 300));
+document.getElementById('vendor-sort')?.addEventListener('change', () => {
+    paginationState.vendors.page = 1;
+    fetchVendors(1);
+});
 
 // Vendor view toggle bindings
 document.addEventListener('DOMContentLoaded', () => {
@@ -2102,6 +2140,9 @@ async function fetchHutang(page) {
 
 // ---------- Cash Flow Page ----------
 function renderCashFlow(filter = '') {
+    // Gudang tidak punya akses ke halaman kas/keuangan
+    const _role = (localStorage.getItem('role') || '').toLowerCase();
+    if (!['admin', 'finance', 'owner', 'kasir'].includes(_role)) return;
     if (filter && filter !== '') currentCashFlowFilter = filter;
     paginationState.cashflow.page = 1;
     fetchCashTransactions(1);
@@ -2163,6 +2204,9 @@ function _renderCashFlowLocal_UNUSED(filter = '') {
 
 // ---------- Profit & Loss Page ----------
 async function renderProfitLoss() {
+    // Gudang tidak punya akses ke laporan laba-rugi
+    const _role = (localStorage.getItem('role') || '').toLowerCase();
+    if (!['admin', 'finance', 'owner'].includes(_role)) return;
     const bulanSelect = document.getElementById('filter-bulan');
     const tahunSelect = document.getElementById('filter-tahun');
 
@@ -2307,6 +2351,9 @@ async function renderProfitLoss() {
 
 // ---------- Balance Sheet Page ----------
 async function renderBalance() {
+    // Gudang tidak punya akses ke neraca keuangan
+    const _role = (localStorage.getItem('role') || '').toLowerCase();
+    if (!['admin', 'finance', 'owner'].includes(_role)) return;
     const bulanSelect = document.getElementById('balance-filter-bulan');
     const tahunSelect = document.getElementById('balance-filter-tahun');
 
@@ -2409,6 +2456,9 @@ async function renderBalance() {
 
 // ---------- Reports Page ----------
 async function renderReports() {
+    // Gudang tidak punya akses ke halaman laporan performa
+    const _role = (localStorage.getItem('role') || '').toLowerCase();
+    if (!['admin', 'finance', 'owner', 'kasir'].includes(_role)) return;
     const bulanSelect = document.getElementById('reports-filter-bulan');
     const tahunSelect = document.getElementById('reports-filter-tahun');
 
@@ -2545,7 +2595,7 @@ function renderPOSProducts(searchTerm = '', category = '') {
                 <div class="pos-product-emoji">${p.emoji}</div>
                 <div class="pos-product-name">${p.name}</div>
                 <div class="pos-product-price">${rp(p.price)}</div>
-                <div class="pos-product-stock">Stok: ${p.stock} ${p.unit}</div>
+                <div class="pos-product-stock">Stok: ${formatNumberTrim(p.stock)} ${p.unit}</div>
             </div>
             `).join('')}
         </div>`;
@@ -2582,7 +2632,7 @@ function renderPOSProducts(searchTerm = '', category = '') {
             <div class="pos-product-emoji">${p.emoji}</div>
             <div class="pos-product-name">${p.name}</div>
             <div class="pos-product-price">${rp(p.price)}</div>
-            <div class="pos-product-stock">Stok: ${p.stock} ${p.unit}</div>
+            <div class="pos-product-stock">Stok: ${formatNumberTrim(p.stock)} ${p.unit}</div>
         </div>
     `).join('');
 }
@@ -2639,11 +2689,40 @@ function addToCart(productId) {
 function updateCartQty(productId, delta) {
     const item = cart.find(c => c.id === productId);
     if (!item) return;
-    item.qty += delta;
+    item.qty = Math.round((item.qty + delta) * 1000) / 1000;
     if (item.qty <= 0) {
         cart = cart.filter(c => c.id !== productId);
     }
     renderCart();
+}
+
+function updateCartQtyDirect(productId, rawValue) {
+    // Normalisasi: koma → titik, lalu parse float
+    const val = parseFloat(String(rawValue).replace(',', '.'));
+    const item = cart.find(c => c.id === productId);
+    if (!item) return;
+    if (isNaN(val) || val <= 0) {
+        // Hapus item jika qty tidak valid atau 0
+        cart = cart.filter(c => c.id !== productId);
+        renderCart();
+        return;
+    }
+    // Batasi 3 desimal untuk menghindari floating point drift
+    const qty = Math.round(val * 1000) / 1000;
+    // Validasi stok
+    const product = PRODUCTS.find(p => p.id === productId);
+    if (product && qty > parseFloat(product.stock || 0)) {
+        showToast(`Qty melebihi stok tersedia (${formatNumberTrim(product.stock)} ${product.unit || ''})`, 'warning');
+        item.qty = parseFloat(product.stock || 0);
+    } else {
+        item.qty = qty;
+    }
+    // Update total display tanpa rebuild DOM penuh (agar input tidak kehilangan fokus)
+    const cartItemTotal = document.querySelector(`.cart-item-qty input[data-id="${productId}"]`)
+        ?.closest('.cart-item-row')?.querySelector('.cart-item-total');
+    if (cartItemTotal) cartItemTotal.textContent = rp(item.price * item.qty);
+    // Update subtotal + total di panel bawah
+    updateCartTotals();
 }
 
 function removeFromCart(productId) {
@@ -2683,7 +2762,7 @@ function renderCart() {
                     <div class="cart-item-name">
                         ${item.emoji ? item.emoji + ' ' : ''}${item.name}
                         ${item.manual_override ? '<span class="badge-manual-source" style="font-size:0.65rem; margin-left:4px;">✏️ Manual</span>' : (item.sumberHarga === 'pricelist' ? `<span class="badge-pricelist-source" style="font-size:0.65rem; margin-left:4px;">${item.pricelistNama || 'Pricelist'}</span>` : '')}
-                        ${(item.cost > 0 && item.price < item.cost) ? '<span class="badge-hpp-warning" style="font-size:0.65rem; margin-left:4px;">⚠️ Bawah HPP</span>' : ''}
+                        ${(isAdmin && item.cost > 0 && item.price < item.cost) ? '<span class="badge-hpp-warning" style="font-size:0.65rem; margin-left:4px;">⚠️ Bawah HPP</span>' : ''}
                         ${isAdmin && item.fee > 0 ? `<span class="fee-indicator">Fee: ${rp(item.fee)}</span>` : ''}
                     </div>
                     <div class="cart-item-price-edit" style="display:flex; align-items:center; gap:0.25rem;">
@@ -2694,7 +2773,12 @@ function renderCart() {
                 </div>
                 <div class="cart-item-qty">
                     <button class="cart-qty-btn" onclick="updateCartQty('${item.id}', -1)">-</button>
-                    <span class="cart-qty-val">${formatNumberTrim(item.qty)}</span>
+                    <input type="text" inputmode="decimal" class="cart-qty-input" data-id="${item.id}"
+                        value="${formatNumberTrim(item.qty)}"
+                        style="width:52px; text-align:center; padding:0.1rem 0.2rem; font-size:0.9rem; border:1px solid var(--gray-300); border-radius:0.25rem;"
+                        onkeydown="if(event.key==='Enter'){this.blur();}"
+                        onblur="updateCartQtyDirect(this.dataset.id, this.value)"
+                        onclick="this.select()" />
                     <button class="cart-qty-btn" onclick="updateCartQty('${item.id}', 1)">+</button>
                 </div>
                 <div class="cart-item-total">${rp(item.price * item.qty)}</div>
@@ -2768,6 +2852,23 @@ function renderCart() {
 }
 
 // Old Settings PPN binding removed
+
+// Helper: update subtotal/ppn/total di panel bawah keranjang tanpa rebuild DOM
+function updateCartTotals() {
+    if (typeof cart === 'undefined') return;
+    const subtotal = cart.reduce((s, c) => s + c.price * c.qty, 0);
+    const afterDiscount = subtotal;
+    const ppnAmount = currentPpnEnabled ? afterDiscount * (currentPpnRate / 100) : 0;
+    const total = afterDiscount + ppnAmount;
+    const countEl = document.getElementById('cart-count');
+    if (countEl) countEl.textContent = cart.reduce((s, c) => s + c.qty, 0);
+    const subEl = document.getElementById('cart-subtotal');
+    if (subEl) subEl.textContent = rp(subtotal);
+    const ppnEl = document.getElementById('cart-ppn');
+    if (ppnEl) ppnEl.textContent = rp(ppnAmount);
+    const totalEl = document.getElementById('cart-total');
+    if (totalEl) totalEl.textContent = rp(total);
+}
 
 // POS search
 document.getElementById('pos-search')?.addEventListener('input', (e) => {
@@ -4056,9 +4157,11 @@ if (document.readyState === 'loading') {
         initAddPurchaseVendorCombobox();
     });
 } else {
-    initPOSCustomerSearch();
-    initPoProductSearch();
-    initAddPurchaseVendorCombobox();
+    setTimeout(() => {
+        initPOSCustomerSearch();
+        initPoProductSearch();
+        initAddPurchaseVendorCombobox();
+    }, 0);
 }
 
 // ---------- Tab Filter Bindings ----------
@@ -4273,6 +4376,7 @@ async function init() {
 
     // Populate dropdowns and fetch role-permitted data from DB (A7: eliminate 403 storm)
     await populateMasterDropdowns();
+    await loadInvoicePreferences();
 
     const fetchPromises = [fetchDashboardSummary()];
 
@@ -4287,7 +4391,6 @@ async function init() {
             fetchCashTransactions(),
             fetchUsers(),
             loadPrefixSettings(),
-            loadInvoicePreferences(),
             loadLandingDemoSetting()
         );
     } else if (loggedRole === 'finance') {
@@ -4531,10 +4634,12 @@ async function fetchProducts(page) {
         const q = document.getElementById('product-search')?.value || '';
         const category = document.getElementById('product-category-filter')?.value || '';
         const statusFilter = document.getElementById('product-status-filter')?.value || 'active';
+        const sort = document.getElementById('product-sort')?.value || 'name_asc';
         const pg = paginationState.products.page;
         let url = '/api/products?page=' + pg + '&limit=' + PAGE_SIZE + '&status=' + encodeURIComponent(statusFilter);
         if (q) url += '&q=' + encodeURIComponent(q);
         if (category && category !== 'all') url += '&category=' + encodeURIComponent(category);
+        if (sort) url += '&sort=' + encodeURIComponent(sort);
 
         const res = await fetch(url, { headers: getAuthHeaders() });
         const json = await res.json();
@@ -4551,7 +4656,7 @@ async function fetchProducts(page) {
             name: p.name,
             category: p.category,
             category_id: p.category_id,
-            cost: parseFloat(p.cost_price),
+            cost: (p.cost_price != null && !isNaN(p.cost_price)) ? parseFloat(p.cost_price) : 0,
             price: parseFloat(p.sell_price),
             stock: parseFloat(p.stock),
             minStock: parseFloat(p.min_stock),
@@ -4565,6 +4670,10 @@ async function fetchProducts(page) {
 
         // Simpan baris halaman ini untuk akses instan di modal (A3: Modal Opname Instan)
         CURRENT_PAGE_PRODUCTS.clear();
+
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        const canSeeHpp = role === 'admin' || role === 'owner' || role === 'gudang';
+        const canSeeSellPrice = role !== 'gudang';
 
         const tbody = document.getElementById('products-body');
         if (!tbody) return;
@@ -4605,8 +4714,8 @@ async function fetchProducts(page) {
                 <td><code style="background:var(--gray-100); padding:2px 6px; border-radius:4px; font-size:0.78rem;">${pr.sku}</code></td>
                 <td style="font-weight:600;">${pr.name}</td>
                 <td>${pr.category || '-'}</td>
-                <td>${rp(pr.cost)}</td>
-                <td style="font-weight:700;">${rp(pr.price)}</td>
+                <td class="td-product-hpp" style="${canSeeHpp ? '' : 'display:none;'}">${canSeeHpp ? rp(pr.cost) : ''}</td>
+                <td class="td-product-price" style="${canSeeSellPrice ? '' : 'display:none; '}font-weight:700;">${canSeeSellPrice ? rp(pr.price) : ''}</td>
                 <td style="font-weight:700;">${pr.stock}</td>
                 <td>${pr.unit}</td>
                 <td>${pr.minStock}</td>
@@ -4653,11 +4762,15 @@ async function saveProduct(isEdit) {
         sku: document.getElementById(`${prefix}-product-sku`).value,
         category_id: categoryValue,   // FIX: backend expects category_id not category
         cost_price: parseFloat(document.getElementById(`${prefix}-product-cost`).value) || 0,
-        sell_price: parseFloat(document.getElementById(`${prefix}-product-price`).value) || 0,
         stock: isEdit ? parseFloat(document.getElementById('edit-product-stock').value) || 0 : parseFloat(document.getElementById('add-product-stock').value) || 0,
         min_stock: parseFloat(document.getElementById(`${prefix}-product-minstock`).value) || 0,
         unit_id: isEdit ? document.getElementById('edit-product-unit').value : document.getElementById('add-product-unit').value
     };
+
+    const priceVal = document.getElementById(`${prefix}-product-price`)?.value;
+    if (priceVal !== undefined && priceVal !== null && String(priceVal).trim() !== '') {
+        payload.sell_price = parseFloat(priceVal) || 0;
+    }
 
     if (!payload.name || !payload.sku) {
         showToast('Nama produk dan SKU wajib diisi!', 'warning');
@@ -4729,8 +4842,11 @@ async function openEditProductModal(id) {
         catEl.value = p.category || '';
         if (!catEl.value && p.category_id) catEl.value = p.category_id;
     }
-    document.getElementById('edit-product-cost').value = formatNumberTrim(p.cost);
-    document.getElementById('edit-product-price').value = formatNumberTrim(p.price);
+    const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+    const canSeeHpp = role === 'admin' || role === 'owner' || role === 'gudang';
+    const canSeeSellPrice = role !== 'gudang';
+    document.getElementById('edit-product-cost').value = (p.cost != null && !isNaN(p.cost) && canSeeHpp) ? formatNumberTrim(p.cost) : '';
+    document.getElementById('edit-product-price').value = (p.price != null && !isNaN(p.price) && canSeeSellPrice) ? formatNumberTrim(p.price) : '';
     document.getElementById('edit-product-stock').value = formatNumberTrim(p.stock);
     document.getElementById('edit-product-minstock').value = formatNumberTrim(p.minStock);
     const unitEl = document.getElementById('edit-product-unit');
@@ -4832,6 +4948,9 @@ function deleteProduct(id) {
 }
 
 async function fetchCustomers(page) {
+    // Gudang tidak punya akses ke data pelanggan
+    const _role = (localStorage.getItem('role') || '').toLowerCase();
+    if (!['admin', 'kasir', 'finance', 'owner'].includes(_role)) return;
     try {
         const mapCustomer = c => ({
             ...c,
@@ -4875,10 +4994,12 @@ async function fetchCustomers(page) {
         if (page !== undefined) paginationState.customers.page = page;
         const q = document.getElementById('customer-search')?.value || '';
         const type = document.getElementById('customer-type-filter')?.value || '';
+        const sort = document.getElementById('customer-sort')?.value || 'name_asc';
         const pg = paginationState.customers.page;
         let url = '/api/customers?page=' + pg + '&limit=' + PAGE_SIZE;
         if (q) url += '&q=' + encodeURIComponent(q);
         if (type && type !== 'all') url += '&category=' + encodeURIComponent(type);
+        if (sort) url += '&sort=' + encodeURIComponent(sort);
 
         const res = await fetch(url, { headers: getAuthHeaders() });
         const json = await res.json();
@@ -5288,9 +5409,11 @@ async function fetchVendors(page) {
         // Paginated fetch for table
         if (page !== undefined) paginationState.vendors.page = page;
         const q = document.getElementById('vendor-search')?.value || '';
+        const sort = document.getElementById('vendor-sort')?.value || 'name_asc';
         const pg = paginationState.vendors.page;
         let url = '/api/vendors?page=' + pg + '&limit=' + PAGE_SIZE;
         if (q) url += '&q=' + encodeURIComponent(q);
+        if (sort) url += '&sort=' + encodeURIComponent(sort);
 
         const res = await fetch(url, { headers: getAuthHeaders() });
         const json = await res.json();
@@ -5560,6 +5683,30 @@ function highlightMatch(text, query) {
     return result;
 }
 
+// Helper: hitung ulang subtotal Add PO tanpa rebuild DOM
+function _recalcAddPurchaseTotals() {
+    const container = document.getElementById('add-purchase-items-container');
+    if (!container) return;
+    let subtotal = 0;
+    addPurchaseItems.forEach((item, index) => {
+        const qty   = parseFloat(item.quantity) || 0;
+        const price = parseFloat(item.price)    || 0;
+        const itemTotal = qty * price;
+        subtotal += itemTotal;
+        // Update kolom "Total" baris ke-index tanpa rebuild
+        const rows = container.querySelectorAll('tr[data-po-index]');
+        const row  = rows[index];
+        if (row) {
+            const totalCell = row.querySelector('[data-po-total]');
+            if (totalCell) totalCell.textContent = rp(itemTotal);
+        }
+    });
+    const subtotalEl = document.getElementById('add-purchase-subtotal-display');
+    const totalEl    = document.getElementById('add-purchase-total-display');
+    if (subtotalEl) subtotalEl.textContent = rp(subtotal);
+    if (totalEl)    totalEl.textContent    = rp(subtotal);
+}
+
 function renderAddPurchaseItems(highlightProductId = null) {
     const container = document.getElementById('add-purchase-items-container');
     if (!container) return;
@@ -5579,22 +5726,23 @@ function renderAddPurchaseItems(highlightProductId = null) {
             setTimeout(() => tr.classList.remove('po-row-highlight'), 1500);
         }
         tr.dataset.productId = item.product_id;
+        tr.dataset.poIndex = index;  // untuk targeted update
 
         tr.innerHTML = `
             <td style="padding: 0.5rem 0.75rem;">
                 <div style="font-weight: 500; color: var(--gray-900);">${escapeHtml(product.name)}</div>
             </td>
             <td style="padding: 0.5rem; text-align: center; white-space: nowrap;">
-                <input type="number" min="1" value="${formatNumberTrim(item.quantity)}" oninput="updateAddPurchaseItemQty(${index}, this.value)" onchange="updateAddPurchaseItemQty(${index}, this.value)" step="any" min="0.001" style="width: 80px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: center;">
+                <input type="number" min="1" value="${formatNumberTrim(item.quantity)}" onchange="updateAddPurchaseItemQty(${index}, this.value)" step="any" style="width: 80px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: center;">
                 <span style="font-size: 0.8rem; color: var(--gray-500); margin-left: 0.25rem;">${escapeHtml(product.unit || 'pcs')}</span>
             </td>
             <td style="padding: 0.5rem; text-align: right;">
                 <div style="display:flex; align-items:center; justify-content:flex-end; gap:0.25rem;">
                     <span style="font-size:0.75rem; color:var(--gray-500);">Rp</span>
-                    <input type="number" value="${formatNumberTrim(item.price)}" oninput="updateAddPurchaseItemPrice(${index}, this.value)" onchange="updateAddPurchaseItemPrice(${index}, this.value)" step="any" style="width: 90px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: right;">
+                    <input type="number" value="${formatNumberTrim(item.price)}" onchange="updateAddPurchaseItemPrice(${index}, this.value)" step="any" style="width: 90px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: right;">
                 </div>
             </td>
-            <td style="padding: 0.5rem; text-align: right; font-weight: 600; color: var(--gray-900);">
+            <td style="padding: 0.5rem; text-align: right; font-weight: 600; color: var(--gray-900);" data-po-total>
                 ${rp(itemTotal)}
             </td>
             <td style="padding: 0.5rem; text-align: center;">
@@ -5623,14 +5771,14 @@ function addProductToPo(prod) {
     if (!prod) return;
     const existing = addPurchaseItems.find(i => String(i.product_id) === String(prod.id));
     if (existing) {
-        existing.quantity = (parseInt(existing.quantity) || 0) + 1;
+        existing.quantity = (parseFloat(existing.quantity) || 0) + 1;
     } else {
         addPurchaseItems.push({
             product_id: prod.id,
             product_name: prod.name,
             unit: prod.unit || 'pcs',
             quantity: 1,
-            price: prod.cost || prod.price || 0
+            price: prod.cost || 0
         });
     }
     renderAddPurchaseItems(prod.id);
@@ -5883,14 +6031,14 @@ class ProductAutocomplete {
 }
 
 // ── PO Modal Product Search Instance ──────────────────────────────────────────
-let poProductAutocomplete = null;
+var poProductAutocomplete = null;
 function getPoProductAutocomplete() {
     if (!poProductAutocomplete) {
         poProductAutocomplete = new ProductAutocomplete({
             inputId: 'add-purchase-product-search',
             dropdownId: 'add-purchase-product-dropdown',
             modalSelector: '#modal-add-purchase .modal',
-            getPrice: function(p) { return p.cost || p.price || 0; },
+            getPrice: function(p) { return p.cost || 0; },
             onSelect: function(p) { addProductToPo(p); }
         });
     }
@@ -5934,13 +6082,15 @@ window.removeAddPurchaseItem = (index) => {
 window.updateAddPurchaseItemQty = (index, val) => {
     const qty = parseFloat(val);
     addPurchaseItems[index].quantity = qty > 0 ? qty : 1;
-    renderAddPurchaseItems();
+    // Targeted update: hanya total baris + subtotal, tanpa rebuild DOM
+    _recalcAddPurchaseTotals();
 };
 
 window.updateAddPurchaseItemPrice = (index, val) => {
     const price = parseFloat(val);
     if (price >= 0) addPurchaseItems[index].price = price;
-    renderAddPurchaseItems();
+    // Targeted update: hanya total baris + subtotal, tanpa rebuild DOM
+    _recalcAddPurchaseTotals();
 };
 
 // FIX: open add-purchase modal with cleared form
@@ -5989,6 +6139,27 @@ function openAddPurchaseModal() {
 
 let editPurchaseItems = [];
 
+// Helper: hitung ulang subtotal Edit PO tanpa rebuild DOM
+function _recalcEditPurchaseTotals() {
+    const container = document.getElementById('edit-purchase-items-container');
+    if (!container) return;
+    let subtotal = 0;
+    editPurchaseItems.forEach((item, index) => {
+        const qty   = parseFloat(item.quantity) || 0;
+        const price = parseFloat(item.price ?? item.cost ?? 0);
+        const itemTotal = qty * price;
+        subtotal += itemTotal;
+        const rows = container.querySelectorAll('tr[data-po-index]');
+        const row  = rows[index];
+        if (row) {
+            const totalCell = row.querySelector('[data-po-total]');
+            if (totalCell) totalCell.textContent = rp(itemTotal);
+        }
+    });
+    const totalEl = document.getElementById('edit-purchase-total');
+    if (totalEl) totalEl.textContent = rp(subtotal);
+}
+
 function renderEditPurchaseItems() {
     const container = document.getElementById('edit-purchase-items-container');
     if (!container) return;
@@ -6003,12 +6174,13 @@ function renderEditPurchaseItems() {
         subtotal += itemTotal;
 
         const tr = document.createElement('tr');
+        tr.dataset.poIndex = index;  // untuk targeted update
         tr.innerHTML = `
             <td style="padding: 0.5rem;">
                 <div style="font-weight: 500; color: var(--gray-900);">${product.name}</div>
             </td>
             <td style="padding: 0.5rem; text-align: center; white-space: nowrap;">
-                <input type="number" min="1" value="${formatNumberTrim(item.quantity)}" onchange="updateEditPurchaseItemQty(${index}, this.value)" step="any" min="0.001" style="width: 80px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: center;">
+                <input type="number" min="1" value="${formatNumberTrim(item.quantity)}" onchange="updateEditPurchaseItemQty(${index}, this.value)" step="any" style="width: 80px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: center;">
                 <span style="font-size: 0.8rem; color: var(--gray-500); margin-left: 0.25rem;">${product.unit || 'pcs'}</span>
             </td>
             <td style="padding: 0.5rem; text-align: right;">
@@ -6017,7 +6189,7 @@ function renderEditPurchaseItems() {
                     <input type="number" value="${formatNumberTrim(itemPrice)}" onchange="updateEditPurchaseItemPrice(${index}, this.value)" step="any" style="width: 90px; padding: 0.25rem; border: 1px solid var(--gray-200); border-radius: 0.25rem; text-align: right;">
                 </div>
             </td>
-            <td style="padding: 0.5rem; text-align: right; font-weight: 600; color: var(--gray-900);">
+            <td style="padding: 0.5rem; text-align: right; font-weight: 600; color: var(--gray-900);" data-po-total>
                 ${rp(itemTotal)}
             </td>
             <td style="padding: 0.5rem; text-align: center;">
@@ -6070,7 +6242,8 @@ window.updateEditPurchaseItemQty = (index, val) => {
     } else {
         editPurchaseItems[index].quantity = 1;
     }
-    renderEditPurchaseItems();
+    // Targeted update: hanya total baris + subtotal, tanpa rebuild DOM
+    _recalcEditPurchaseTotals();
 };
 
 window.updateEditPurchaseItemPrice = (index, val) => {
@@ -6078,7 +6251,8 @@ window.updateEditPurchaseItemPrice = (index, val) => {
     if (price >= 0) {
         editPurchaseItems[index].price = price;
     }
-    renderEditPurchaseItems();
+    // Targeted update: hanya total baris + subtotal, tanpa rebuild DOM
+    _recalcEditPurchaseTotals();
 };
 
 let originalEditPurchaseItems = [];
@@ -6113,8 +6287,13 @@ async function openEditPurchaseModal(id) {
     // Populate product select
     const select = document.getElementById('edit-purchase-product-select');
     if (select) {
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        const canSeeSellPrice = role !== 'gudang';
         select.innerHTML = '<option value="" disabled selected>- Pilih Produk -</option>' +
-            PRODUCTS.map(p => `<option value="${p.id}">${p.name} (${rp(p.cost || p.price)})</option>`).join('');
+            PRODUCTS.map(p => {
+                const labelPrice = (p.cost != null && p.cost > 0) ? rp(p.cost) : (canSeeSellPrice ? rp(p.price) : '');
+                return `<option value="${p.id}">${p.name}${labelPrice ? ' (' + labelPrice + ')' : ''}</option>`;
+            }).join('');
     }
 
     // Reset items and show loading
@@ -6297,7 +6476,7 @@ async function fetchInvoices(page) {
 
         const today = new Date().toISOString().split('T')[0];
         const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
-        const canEdit = role === 'admin' || role === 'finance';
+        const canEdit = role === 'admin' || role === 'finance' || role === 'kasir';
         const tbody = document.getElementById('invoices-body');
         if (tbody) {
             tbody.innerHTML = rows.map(inv => {
@@ -6521,7 +6700,7 @@ function renderEditInvoiceItems() {
                         oninput="updateEditInvoiceItemFeeNotes(${index}, this.value)"
                         style="width:90px;padding:0.2rem 0.3rem;font-size:0.78rem;border:1px solid #fcd34d;border-radius:0.25rem;background:#fffbeb;color:#92400e;">
                 </div>
-            </td>` : '<td></td>'}
+            </td>` : ''}
             <td style="padding: 0.5rem; text-align: center;">
                 <button type="button" onclick="removeEditInvoiceItem(${index})" style="color: var(--rose-500); background: none; border: none; cursor: pointer; padding: 0.25rem;">
                     <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
@@ -6536,7 +6715,7 @@ function renderEditInvoiceItems() {
         container.innerHTML = `<tr><td colspan="${colspan}" style="text-align: center; padding: 1rem; color: var(--gray-500);">Belum ada item.</td></tr>`;
     }
 
-    const ppnActive = (typeof currentPpnEnabled !== 'undefined') ? currentPpnEnabled : true;
+    const ppnActive = (typeof currentPpnEnabled !== 'undefined') ? currentPpnEnabled : false;
     const ppnRateEff = (typeof currentPpnRate !== 'undefined') ? currentPpnRate : 11;
     const ppn = ppnActive ? Math.round(subtotal * (ppnRateEff / 100)) : 0;
     const grandTotal = subtotal + ppn;
@@ -6786,7 +6965,7 @@ async function saveInvoiceEdits(bypassSoftLock = false, correctionReason = null)
     const inv = INVOICES.find(x => x.id === id);
     const customer_id = inv ? inv.customerId : null;
 
-    const subtotal = editInvoiceItems.reduce((s, i) => s + (parseFloat(i.price || i.sell_price || 0) * parseInt(i.quantity || i.qty || 0)), 0);
+    const subtotal = editInvoiceItems.reduce((s, i) => s + (parseFloat(i.price || i.sell_price || 0) * parseFloat(i.quantity || i.qty || 0)), 0);
     const ppnRate = (typeof currentPpnEnabled !== 'undefined' && !currentPpnEnabled) ? 0 : ((typeof currentPpnRate !== 'undefined' ? currentPpnRate : 11) / 100);
     const newTotal = subtotal + Math.round(subtotal * ppnRate);
 
@@ -7009,6 +7188,9 @@ window.cancelPurchaseFromEdit = () => {
 // ==========================================================================
 
 async function fetchCashTransactions(page) {
+    // Gudang tidak punya akses ke data kas/keuangan
+    const _role = (localStorage.getItem('role') || '').toLowerCase();
+    if (!['admin', 'finance', 'owner', 'kasir'].includes(_role)) return;
     try {
         // Full data for CASH_TRANSACTIONS global cache
         const resAll = await fetch('/api/finance/cash-flow?all=true', { headers: getAuthHeaders() });
@@ -7744,11 +7926,18 @@ function openEditStaffModal(id) {
     document.getElementById('staff-name').value = u.name;
     document.getElementById('staff-username').value = u.username;
     document.getElementById('staff-username').disabled = true;
-    document.getElementById('staff-password').value = ''; // Leave empty if no change
+    const pwInp = document.getElementById('staff-password');
+    if (pwInp) {
+        pwInp.value = ''; // Leave empty if no change
+        pwInp.type = 'password';
+    }
+    const hint = document.getElementById('staff-password-hint');
+    if (hint) hint.textContent = 'Minimal 6 karakter. Kosongkan jika tidak ingin mengubah password saat edit.';
     document.getElementById('staff-email').value = u.email || '';
     document.getElementById('staff-role').value = u.role;
     document.getElementById('staff-status').value = u.active ? 'true' : 'false';
     openModal('modal-add-staff');
+    if (window.lucide) lucide.createIcons();
 }
 
 function openAddStaffModal() {
@@ -7757,11 +7946,18 @@ function openAddStaffModal() {
     document.getElementById('staff-name').value = '';
     document.getElementById('staff-username').value = '';
     document.getElementById('staff-username').disabled = false;
-    document.getElementById('staff-password').value = '';
+    const pwInp = document.getElementById('staff-password');
+    if (pwInp) {
+        pwInp.value = '';
+        pwInp.type = 'password';
+    }
+    const hint = document.getElementById('staff-password-hint');
+    if (hint) hint.textContent = 'Minimal 6 karakter. Default: 123456 jika dikosongkan.';
     document.getElementById('staff-email').value = '';
     document.getElementById('staff-role').value = 'kasir';
     document.getElementById('staff-status').value = 'true';
     openModal('modal-add-staff');
+    if (window.lucide) lucide.createIcons();
 }
 
 async function saveStaff() {
@@ -7817,6 +8013,119 @@ async function deleteStaff(id) {
     } catch (err) {
         console.error(err);
         showToast('Gagal menghapus staff', 'error');
+    }
+}
+
+// ---------- Change Password Modal & Toggle Handlers ----------
+function togglePasswordVisibility(inputId, btn) {
+    const inp = document.getElementById(inputId);
+    if (!inp) return;
+    const isPw = inp.type === 'password';
+    inp.type = isPw ? 'text' : 'password';
+    if (btn) {
+        btn.innerHTML = isPw
+            ? '<i data-lucide="eye-off" style="width: 16px; height: 16px;"></i>'
+            : '<i data-lucide="eye" style="width: 16px; height: 16px;"></i>';
+        if (window.lucide) lucide.createIcons();
+    }
+}
+
+function openChangePasswordModal(e) {
+    if (e) e.preventDefault();
+    const oldP = document.getElementById('cp-old-password');
+    const newP = document.getElementById('cp-new-password');
+    const confP = document.getElementById('cp-confirm-password');
+    if (oldP) { oldP.value = ''; oldP.type = 'password'; }
+    if (newP) { newP.value = ''; newP.type = 'password'; }
+    if (confP) { confP.value = ''; confP.type = 'password'; }
+
+    // Reset eye toggle icons
+    const modal = document.getElementById('modal-change-password');
+    if (modal) {
+        modal.querySelectorAll('.btn-toggle-pw').forEach(btn => {
+            btn.innerHTML = '<i data-lucide="eye" style="width: 16px; height: 16px;"></i>';
+        });
+    }
+
+    const errBox = document.getElementById('cp-error-msg');
+    if (errBox) {
+        errBox.textContent = '';
+        errBox.style.display = 'none';
+    }
+
+    openModal('modal-change-password');
+    if (window.lucide) lucide.createIcons();
+}
+
+async function submitChangePassword() {
+    const oldPassword = (document.getElementById('cp-old-password')?.value || '');
+    const newPassword = (document.getElementById('cp-new-password')?.value || '');
+    const confirmPassword = (document.getElementById('cp-confirm-password')?.value || '');
+    const errBox = document.getElementById('cp-error-msg');
+    const submitBtn = document.getElementById('btn-submit-change-password');
+
+    function showError(msg) {
+        if (errBox) {
+            errBox.textContent = msg;
+            errBox.style.display = 'block';
+        } else {
+            showToast(msg, 'error');
+        }
+    }
+
+    if (errBox) errBox.style.display = 'none';
+
+    // Client-side validations
+    if (!oldPassword || !newPassword || !confirmPassword) {
+        return showError('Semua field wajib diisi');
+    }
+    if (newPassword.length < 8) {
+        return showError('Password baru minimal 8 karakter');
+    }
+    if (newPassword === oldPassword) {
+        return showError('Password baru tidak boleh sama dengan password lama');
+    }
+    if (confirmPassword !== newPassword) {
+        return showError('Konfirmasi password tidak cocok');
+    }
+
+    try {
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i data-lucide="loader" style="width:16px;height:16px;animation:spin 1s linear infinite;"></i> Menyimpan...';
+            if (window.lucide) lucide.createIcons();
+        }
+
+        const res = await fetch('/api/auth/change-password', {
+            method: 'PUT',
+            headers: {
+                ...getAuthHeaders(),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                password_lama: oldPassword,
+                password_baru: newPassword,
+                konfirmasi_password: confirmPassword
+            })
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok && data.success) {
+            closeModal('modal-change-password');
+            showToast(data.message || 'Password berhasil diubah!', 'success');
+        } else {
+            showError(data.error || 'Gagal mengubah password');
+        }
+    } catch (err) {
+        console.error(err);
+        showError('Gagal terhubung ke server');
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i data-lucide="check" style="width: 16px; height: 16px;"></i> Simpan Password';
+            if (window.lucide) lucide.createIcons();
+        }
     }
 }
 
@@ -8157,20 +8466,16 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Invoice Preferences
-let currentPpnEnabled = true;
+let currentPpnEnabled = false;
 let transactionCount = 0;
 let pendingPpnToggleState = true;
 
 async function loadInvoicePreferences() {
     try {
-        const [resSet, resCount] = await Promise.all([
-            fetch('/api/settings', { headers: getAuthHeaders() }),
-            fetch('/api/transactions/count', { headers: getAuthHeaders() })
-        ]);
-
+        const resSet = await fetch('/api/settings', { headers: getAuthHeaders() });
         if (resSet.ok) {
             const settings = await resSet.json();
-            currentPpnEnabled = settings.ppn_enabled !== 'false';
+            currentPpnEnabled = settings.ppn_enabled === 'true' || settings.ppn_enabled === '1' || settings.ppn_enabled === true;
             currentPpnRate = parseFloat(settings.pajak_default || 11);
             
             const ppnCheck = document.getElementById('settings-ppn-enabled');
@@ -8183,11 +8488,14 @@ async function loadInvoicePreferences() {
             }
         }
 
-        if (resCount.ok) {
-            const countData = await resCount.json();
-            transactionCount = parseInt(countData.count || 0, 10);
-            console.log('Loaded transaction count for PPN toggle:', transactionCount);
-        }
+        try {
+            const resCount = await fetch('/api/transactions/count', { headers: getAuthHeaders() });
+            if (resCount.ok) {
+                const countData = await resCount.json();
+                transactionCount = parseInt(countData.count || 0, 10);
+                console.log('Loaded transaction count for PPN toggle:', transactionCount);
+            }
+        } catch (_) {}
         
         // Update the cart view in POS to reflect initial PPN settings
         if (typeof renderCart === 'function') {
@@ -8275,6 +8583,7 @@ async function saveInvoicePreferences() {
             currentPpnEnabled = payload.ppn_enabled === 'true';
             currentPpnRate = parseFloat(payload.pajak_default);
             renderCart();
+            notifyDataChange('settings');
         } else {
             const err = await res.json();
             showToast('Gagal menyimpan preferensi: ' + (err.error || 'Terjadi kesalahan'), 'error');
@@ -9678,8 +9987,22 @@ async function exportSection(section) {
 
     try {
         if (section === 'produk') {
-            headers = ["SKU", "Nama Produk", "Brand/Merk", "Kategori", "Harga Beli", "Harga Jual", "Stok", "Stok Minimum", "Satuan"];
-            rows = PRODUCTS.map(p => [p.sku||'', p.name||'', p.brand||'', p.category||'', p.cost||0, p.price||0, p.stock||0, p.minStock||0, p.unit||'']);
+            const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+            const canSeeHpp = role === 'admin' || role === 'owner' || role === 'gudang';
+            const canSeeSellPrice = role !== 'gudang';
+
+            headers = ["SKU", "Nama Produk", "Brand/Merk", "Kategori"];
+            if (canSeeHpp) headers.push("Harga Beli");
+            if (canSeeSellPrice) headers.push("Harga Jual");
+            headers.push("Stok", "Stok Minimum", "Satuan");
+
+            rows = PRODUCTS.map(p => {
+                const row = [p.sku||'', p.name||'', p.brand||'', p.category||''];
+                if (canSeeHpp) row.push(p.cost||0);
+                if (canSeeSellPrice) row.push(p.price||0);
+                row.push(p.stock||0, p.minStock||0, p.unit||'');
+                return row;
+            });
             filename = "export_produk.xlsx";
         } else if (section === 'pelanggan') {
             headers = ["Nama", "Tipe", "Telepon", "Kota", "Alamat", "Limit Piutang"];
@@ -10430,7 +10753,7 @@ async function openPricelistDetail(id) {
 function renderPricelistItemsTable(items) {
     const tbody = document.getElementById('detail-pl-items-body');
     const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
-    const showHpp = role === 'admin' || role === 'owner';
+    const showHpp = role === 'admin' || role === 'owner' || role === 'gudang';
 
     const thHpp = document.getElementById('th-pl-hpp');
     if (thHpp) thHpp.style.display = showHpp ? '' : 'none';
@@ -11533,9 +11856,9 @@ async function openSalesReturnModal(invId) {
                         <td style="text-align:right;">
                             <input type="number" class="form-input sales-ret-qty-input" 
                                 style="width: 80px; text-align:right; padding: 0.25rem 0.4rem; font-size: 0.85rem;"
-                                min="0" max="${maxReturn}" value="0" 
+                                min="0" max="${maxReturn}" step="any" value="0" 
                                 data-idx="${idx}" ${isAllReturned ? 'disabled' : ''}
-                                oninput="updateSalesReturnCalc()">
+                                oninput="this.value=this.value.replace(',','.'); updateSalesReturnCalc()">
                         </td>
                         <td>
                             <select class="form-input sales-ret-cond-select" style="padding: 0.25rem 0.4rem; font-size: 0.8rem;" data-idx="${idx}" ${isAllReturned ? 'disabled' : ''}>
@@ -11764,9 +12087,9 @@ async function openPurchaseReturnModal(poId) {
                         <td style="text-align:right;">
                             <input type="number" class="form-input purchase-ret-qty-input" 
                                 style="width: 80px; text-align:right; padding: 0.25rem 0.4rem; font-size: 0.85rem;"
-                                min="0" max="${maxReturn}" value="0" 
+                                min="0" max="${maxReturn}" step="any" value="0" 
                                 data-idx="${idx}" ${isAllReturned ? 'disabled' : ''}
-                                oninput="updatePurchaseReturnCalc()">
+                                oninput="this.value=this.value.replace(',','.'); updatePurchaseReturnCalc()">
                         </td>
                         <td class="th-purchase-return-finance" style="text-align:right; font-weight:600; ${canSeeFinance ? '' : 'display:none;'}">
                             <span id="purchase-ret-item-subtotal-${idx}">Rp 0</span>
@@ -12217,7 +12540,10 @@ function formatMoveType(type) {
         retur_penjualan_rusak: 'Retur Rusak',
         retur_pembelian: 'Retur Beli',
         cancel_invoice: 'Batal Inv',
-        koreksi_edit: 'Koreksi'
+        koreksi_edit: 'Koreksi',
+        konversi_keluar: 'Konversi Keluar',
+        konversi_masuk: 'Konversi Masuk',
+        batal_konversi: 'Batal Konversi'
     };
     return map[type] || capitalize(type || '-');
 }
@@ -12346,3 +12672,593 @@ window.confirmDeleteOutstandingHutang = confirmDeleteOutstandingHutang;
 window.executeDeleteOutstandingHutang = executeDeleteOutstandingHutang;
 window.previewHutangImport = previewHutangImport;
 window.commitHutangImport = commitHutangImport;
+
+// =========================================================================
+// FITUR: KONVERSI PRODUK (Carton -> Kg / Satuan Lain)
+// Akses: Admin & Gudang (Gudang tidak melihat HPP / Nilai)
+// =========================================================================
+
+let conversionsCurrentPage = 1;
+let conversionsDebounceTimer = null;
+let currentActiveConversionDetail = null;
+let allProductsForConversion = [];
+
+async function ensureProductsLoadedForConversion() {
+    try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/products', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const list = Array.isArray(data) ? data : (data.data || []);
+            allProductsForConversion = list.filter(p => p.is_active !== 0 && p.is_active !== false);
+        }
+    } catch (e) {
+        console.error('Error fetching products for conversion:', e);
+    }
+}
+
+async function loadConversionsPage(page = 1) {
+    conversionsCurrentPage = page;
+    const search = document.getElementById('conversions-search')?.value || '';
+    const status = document.getElementById('conversions-filter-status')?.value || 'all';
+    const from = document.getElementById('conversions-date-from')?.value || '';
+    const to = document.getElementById('conversions-date-to')?.value || '';
+    const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+
+    // Akses: Admin dan Gudang
+    if (role !== 'admin' && role !== 'gudang') {
+        showToast('Akses ditolak: Hanya Admin dan Gudang yang memiliki akses ke Konversi Produk.', 'error');
+        navigateTo('dashboard');
+        return;
+    }
+
+    const canSeeVal = role === 'admin' || role === 'owner';
+
+    let url = `/api/conversions?page=${page}&limit=80`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+    if (status && status !== 'all') url += `&status=${encodeURIComponent(status)}`;
+    if (from) url += `&startDate=${encodeURIComponent(from)}`;
+    if (to) url += `&endDate=${encodeURIComponent(to)}`;
+
+    const tbody = document.getElementById('conversions-table-body');
+    const emptyEl = document.getElementById('conversions-empty-state');
+    if (!tbody) return;
+
+    try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Gagal memuat data konversi');
+        }
+
+        const json = await res.json();
+        const rows = json.data || [];
+        const pag = json.pagination || {};
+
+        if (rows.length === 0) {
+            tbody.innerHTML = '';
+            if (emptyEl) emptyEl.style.display = 'block';
+        } else {
+            if (emptyEl) emptyEl.style.display = 'none';
+            tbody.innerHTML = rows.map(c => {
+                const dateStr = (c.date || '').split('T')[0];
+                const statusLabel = c.status === 'posted' ? 'Posted' : (c.status === 'cancelled' ? 'Dibatalkan' : c.status);
+                const statusClass = c.status || 'posted';
+
+                const movedValDisplay = canSeeVal
+                    ? (typeof formatRupiah === 'function' ? formatRupiah(c.moved_value || 0) : 'Rp ' + Number(c.moved_value || 0).toLocaleString('id-ID'))
+                    : '-';
+
+                return `
+                    <tr>
+                        <td style="font-weight: 600; color: var(--blue-600); cursor: pointer;" onclick="viewConversionDetail(${c.id})">
+                            ${c.number}
+                        </td>
+                        <td style="font-size: 0.85rem; color: var(--gray-600);">${dateStr}</td>
+                        <td>
+                            <strong style="color: var(--gray-900);">${c.source_product_name || '-'}</strong>
+                            <div style="font-size: 0.78rem; color: var(--gray-500);">${c.source_product_sku || ''}</div>
+                            <div style="font-size: 0.85rem; font-weight: 600; color: var(--rose-600); margin-top: 2px;">
+                                -${parseFloat(c.source_qty || 0)} ${c.source_unit || ''}
+                            </div>
+                        </td>
+                        <td>
+                            <strong style="color: var(--gray-900);">${c.target_product_name || '-'}</strong>
+                            <div style="font-size: 0.78rem; color: var(--gray-500);">${c.target_product_sku || ''}</div>
+                            <div style="font-size: 0.85rem; font-weight: 600; color: var(--emerald-600); margin-top: 2px;">
+                                +${parseFloat(c.target_qty || 0)} ${c.target_unit || ''}
+                            </div>
+                        </td>
+                        <td class="td-conversion-value" style="text-align: right; font-weight: 600; color: var(--gray-800);">
+                            ${movedValDisplay}
+                        </td>
+                        <td style="text-align: center;">
+                            <span class="badge-status ${statusClass}">${statusLabel}</span>
+                        </td>
+                        <td style="font-size: 0.82rem; color: var(--gray-600);">
+                            ${c.created_by_name || '-'}
+                        </td>
+                        <td style="text-align: center;">
+                            <button class="btn-action secondary" style="padding: 4px 8px;" onclick="viewConversionDetail(${c.id})" title="Lihat Detail">
+                                <i data-lucide="eye" style="width: 15px; height: 15px;"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        renderPagination({
+            containerId: 'pagination-conversions',
+            currentPage: page,
+            totalItems: pag.total || 0,
+            pageSize: 80,
+            onPageChange: (p) => loadConversionsPage(p)
+        });
+
+        applyRoleRestrictions();
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (e) {
+        console.error('Error fetching conversions:', e);
+        showToast(e.message, 'error');
+    }
+}
+
+function debounceConversionsSearch() {
+    clearTimeout(conversionsDebounceTimer);
+    conversionsDebounceTimer = setTimeout(() => {
+        loadConversionsPage(1);
+    }, 350);
+}
+
+function resetConversionsFilter() {
+    const sEl = document.getElementById('conversions-search');
+    const stEl = document.getElementById('conversions-filter-status');
+    const fromEl = document.getElementById('conversions-date-from');
+    const toEl = document.getElementById('conversions-date-to');
+    if (sEl) sEl.value = '';
+    if (stEl) stEl.value = 'all';
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
+    loadConversionsPage(1);
+}
+
+async function openCreateConversionModal() {
+    await ensureProductsLoadedForConversion();
+
+    // Reset date to today WITA
+    const dateInput = document.getElementById('conv-date');
+    if (dateInput) {
+        dateInput.value = typeof getTodayWITA === 'function' ? getTodayWITA() : new Date().toISOString().split('T')[0];
+    }
+
+    // Populate dropdowns
+    const srcSelect = document.getElementById('conv-source-product');
+    const tgtSelect = document.getElementById('conv-target-product');
+
+    if (srcSelect && tgtSelect) {
+        const optionsHtml = '<option value="">-- Pilih Produk --</option>' +
+            allProductsForConversion.map(p => {
+                const stockDisplay = parseFloat(p.stock || 0);
+                const unitStr = p.unit || p.unit_name || p.unit_id || '';
+                return `<option value="${p.id}" data-stock="${stockDisplay}" data-unit="${unitStr}" data-cost="${parseFloat(p.cost_price || 0)}">${p.name} (Stok: ${stockDisplay} ${unitStr})</option>`;
+            }).join('');
+
+        srcSelect.innerHTML = optionsHtml;
+        tgtSelect.innerHTML = optionsHtml;
+    }
+
+    // Reset fields
+    const srcQty = document.getElementById('conv-source-qty');
+    const tgtQty = document.getElementById('conv-target-qty');
+    const notes = document.getElementById('conv-notes');
+    if (srcQty) srcQty.value = '';
+    if (tgtQty) tgtQty.value = '';
+    if (notes) notes.value = '';
+
+    const srcStockDisp = document.getElementById('conv-source-stock-display');
+    if (srcStockDisp) srcStockDisp.textContent = 'Stok: -';
+
+    const srcUnitLbl = document.getElementById('conv-source-unit-label');
+    const tgtUnitLbl = document.getElementById('conv-target-unit-label');
+    if (srcUnitLbl) srcUnitLbl.textContent = 'Satuan';
+    if (tgtUnitLbl) tgtUnitLbl.textContent = 'Satuan';
+
+    const warn = document.getElementById('conv-source-stock-warning');
+    if (warn) warn.style.display = 'none';
+
+    const ratioBox = document.getElementById('conv-ratio-info-box');
+    if (ratioBox) ratioBox.style.display = 'none';
+
+    const adminValText = document.getElementById('conv-admin-value-text');
+    if (adminValText) adminValText.textContent = 'Pilih produk sumber & qty untuk melihat estimasi nilai yang dipindah.';
+
+    const btnSave = document.getElementById('btn-save-conversion');
+    if (btnSave) btnSave.disabled = false;
+
+    applyRoleRestrictions();
+    openModal('modal-create-conversion');
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function onConvSourceProductChanged() {
+    const srcSelect = document.getElementById('conv-source-product');
+    const selectedOpt = srcSelect?.options[srcSelect.selectedIndex];
+    const stock = selectedOpt ? parseFloat(selectedOpt.dataset.stock || 0) : 0;
+    const unit = selectedOpt ? (selectedOpt.dataset.unit || '-') : '-';
+
+    const stockDisp = document.getElementById('conv-source-stock-display');
+    if (stockDisp) {
+        stockDisp.textContent = selectedOpt && selectedOpt.value ? `Stok: ${stock} ${unit}` : 'Stok: -';
+    }
+
+    const unitLbl = document.getElementById('conv-source-unit-label');
+    if (unitLbl) {
+        unitLbl.textContent = unit !== '-' ? unit : 'Satuan';
+    }
+
+    updateConversionRatioInfo();
+}
+
+function onConvTargetProductChanged() {
+    const tgtSelect = document.getElementById('conv-target-product');
+    const selectedOpt = tgtSelect?.options[tgtSelect.selectedIndex];
+    const unit = selectedOpt ? (selectedOpt.dataset.unit || '-') : '-';
+
+    const unitLbl = document.getElementById('conv-target-unit-label');
+    if (unitLbl) {
+        unitLbl.textContent = unit !== '-' ? unit : 'Satuan';
+    }
+
+    updateConversionRatioInfo();
+}
+
+function updateConversionRatioInfo() {
+    const srcSelect = document.getElementById('conv-source-product');
+    const tgtSelect = document.getElementById('conv-target-product');
+    const srcQtyInput = document.getElementById('conv-source-qty');
+    const tgtQtyInput = document.getElementById('conv-target-qty');
+    const warn = document.getElementById('conv-source-stock-warning');
+    const btnSave = document.getElementById('btn-save-conversion');
+
+    const srcOpt = srcSelect?.options[srcSelect.selectedIndex];
+    const tgtOpt = tgtSelect?.options[tgtSelect.selectedIndex];
+
+    const currentStock = srcOpt ? parseFloat(srcOpt.dataset.stock || 0) : 0;
+    const srcCost = srcOpt ? parseFloat(srcOpt.dataset.cost || 0) : 0;
+    const srcUnit = srcOpt ? (srcOpt.dataset.unit || 'satuan') : 'satuan';
+    const tgtUnit = tgtOpt ? (tgtOpt.dataset.unit || 'satuan') : 'satuan';
+
+    const sQty = parseFloat(srcQtyInput?.value || 0);
+    const tQty = parseFloat(tgtQtyInput?.value || 0);
+
+    // Warning stok sumber melebihi stok tersedia
+    if (srcOpt && srcOpt.value && sQty > currentStock) {
+        if (warn) warn.style.display = 'block';
+        if (btnSave) btnSave.disabled = true;
+    } else {
+        if (warn) warn.style.display = 'none';
+        if (btnSave) btnSave.disabled = false;
+    }
+
+    // Info rasio kewajaran real-time
+    const ratioBox = document.getElementById('conv-ratio-info-box');
+    const ratioText = document.getElementById('conv-ratio-info-text');
+    if (sQty > 0 && tQty > 0) {
+        const ratio = (tQty / sQty).toFixed(4).replace(/\.?0+$/, '');
+        if (ratioBox && ratioText) {
+            ratioText.innerHTML = `<strong>Info Kewajaran:</strong> Rata-rata 1 ${srcUnit} menghasilkan ≈ <strong>${ratio} ${tgtUnit}</strong> (Hasil: ${tQty} ${tgtUnit} ÷ Sumber: ${sQty} ${srcUnit}).`;
+            ratioBox.style.display = 'block';
+        }
+    } else {
+        if (ratioBox) ratioBox.style.display = 'none';
+    }
+
+    // Info nilai & HPP (Admin only)
+    const adminValText = document.getElementById('conv-admin-value-text');
+    if (adminValText) {
+        if (srcOpt && srcOpt.value && sQty > 0) {
+            const movedVal = srcCost * sQty;
+            const hppStr = typeof formatRupiah === 'function' ? formatRupiah(srcCost) : 'Rp ' + srcCost.toLocaleString('id-ID');
+            const movedValStr = typeof formatRupiah === 'function' ? formatRupiah(movedVal) : 'Rp ' + movedVal.toLocaleString('id-ID');
+            adminValText.innerHTML = `HPP Sumber Snapshot: <strong>${hppStr}</strong> / ${srcUnit} &nbsp;|&nbsp; Total Nilai Dipindah: <strong>${movedValStr}</strong>`;
+        } else {
+            adminValText.textContent = 'Pilih produk sumber & qty untuk melihat estimasi nilai yang dipindah.';
+        }
+    }
+}
+
+async function submitCreateConversion() {
+    const date = document.getElementById('conv-date')?.value;
+    const source_product_id = document.getElementById('conv-source-product')?.value;
+    const source_qty = parseFloat(document.getElementById('conv-source-qty')?.value || 0);
+    const target_product_id = document.getElementById('conv-target-product')?.value;
+    const target_qty = parseFloat(document.getElementById('conv-target-qty')?.value || 0);
+    const notes = (document.getElementById('conv-notes')?.value || '').trim();
+
+    if (!date) {
+        showToast('Tanggal konversi wajib diisi', 'error');
+        return;
+    }
+    if (!source_product_id || !target_product_id) {
+        showToast('Pilih produk sumber dan produk tujuan', 'error');
+        return;
+    }
+    if (source_product_id === target_product_id) {
+        showToast('Produk sumber dan produk tujuan tidak boleh sama', 'error');
+        return;
+    }
+    if (isNaN(source_qty) || source_qty <= 0) {
+        showToast('Qty sumber harus lebih besar dari 0', 'error');
+        return;
+    }
+    if (isNaN(target_qty) || target_qty <= 0) {
+        showToast('Qty hasil harus lebih besar dari 0', 'error');
+        return;
+    }
+
+    const srcOpt = document.getElementById('conv-source-product')?.options[document.getElementById('conv-source-product').selectedIndex];
+    const tgtOpt = document.getElementById('conv-target-product')?.options[document.getElementById('conv-target-product').selectedIndex];
+    const availableStock = parseFloat(srcOpt?.dataset?.stock || 0);
+
+    if (source_qty > availableStock) {
+        showToast(`Stok produk sumber tidak mencukupi (Tersedia: ${availableStock}, Diminta: ${source_qty})`, 'error');
+        return;
+    }
+
+    const srcName = srcOpt?.text?.split(' (Stok:')[0] || 'Produk Sumber';
+    const tgtName = tgtOpt?.text?.split(' (Stok:')[0] || 'Produk Tujuan';
+    const srcUnit = srcOpt?.dataset?.unit || '';
+    const tgtUnit = tgtOpt?.dataset?.unit || '';
+
+    // Konfirmasi dialog sebelum simpan
+    const confirmed = confirm(
+        `Konfirmasi Konversi Produk:\n\n` +
+        `• Produk Sumber: ${srcName} (${source_qty} ${srcUnit})\n` +
+        `• Produk Tujuan: ${tgtName} (${target_qty} ${tgtUnit})\n\n` +
+        `Stok sumber akan dikurangi dan stok tujuan akan ditambah secara permanen. Lanjutkan?`
+    );
+    if (!confirmed) return;
+
+    try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/conversions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                date,
+                source_product_id,
+                source_qty,
+                target_product_id,
+                target_qty,
+                notes
+            })
+        });
+
+        const json = await res.json();
+        if (!res.ok) {
+            throw new Error(json.error || 'Gagal menyimpan konversi');
+        }
+
+        showToast(json.message || 'Konversi produk berhasil disimpan!', 'success');
+        closeModal('modal-create-conversion');
+        loadConversionsPage(1);
+
+        // Refresh master products in POS/dashboard if needed
+        if (typeof fetchProducts === 'function') fetchProducts();
+    } catch (e) {
+        console.error('Error creating conversion:', e);
+        showToast(e.message, 'error');
+    }
+}
+
+async function viewConversionDetail(id) {
+    try {
+        const token = localStorage.getItem('token');
+        const role = (localStorage.getItem('role') || 'kasir').toLowerCase();
+        const canSeeVal = role === 'admin' || role === 'owner';
+
+        const res = await fetch(`/api/conversions/${id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Gagal memuat detail konversi');
+        }
+
+        const conv = await res.json();
+        currentActiveConversionDetail = conv;
+
+        // Set elements
+        const numEl = document.getElementById('conv-detail-number');
+        const dateEl = document.getElementById('conv-detail-date');
+        const badgeEl = document.getElementById('conv-detail-status-badge');
+        if (numEl) numEl.textContent = conv.number;
+        if (dateEl) dateEl.textContent = `Tanggal: ${conv.date}`;
+
+        if (badgeEl) {
+            const statusLabel = conv.status === 'posted' ? 'Posted' : (conv.status === 'cancelled' ? 'Dibatalkan' : conv.status);
+            badgeEl.innerHTML = `<span class="badge-status ${conv.status}">${statusLabel}</span>`;
+        }
+
+        // Sumber
+        const sNameEl = document.getElementById('conv-detail-source-name');
+        const sSkuEl = document.getElementById('conv-detail-source-sku');
+        const sQtyEl = document.getElementById('conv-detail-source-qty');
+        const sHppEl = document.getElementById('conv-detail-source-hpp');
+        if (sNameEl) sNameEl.textContent = conv.source_product_name || '-';
+        if (sSkuEl) sSkuEl.textContent = `SKU: ${conv.source_product_sku || '-'}`;
+        if (sQtyEl) sQtyEl.textContent = `-${parseFloat(conv.source_qty || 0)} ${conv.source_unit || ''}`;
+        if (sHppEl) {
+            sHppEl.textContent = canSeeVal
+                ? `HPP Snapshot: ${typeof formatRupiah === 'function' ? formatRupiah(conv.source_hpp_snapshot || 0) : 'Rp ' + Number(conv.source_hpp_snapshot || 0).toLocaleString('id-ID')}`
+                : '';
+        }
+
+        // Tujuan
+        const tNameEl = document.getElementById('conv-detail-target-name');
+        const tSkuEl = document.getElementById('conv-detail-target-sku');
+        const tQtyEl = document.getElementById('conv-detail-target-qty');
+        const tHppEl = document.getElementById('conv-detail-target-hpp');
+        if (tNameEl) tNameEl.textContent = conv.target_product_name || '-';
+        if (tSkuEl) tSkuEl.textContent = `SKU: ${conv.target_product_sku || '-'}`;
+        if (tQtyEl) tQtyEl.textContent = `+${parseFloat(conv.target_qty || 0)} ${conv.target_unit || ''}`;
+        if (tHppEl) {
+            tHppEl.textContent = canSeeVal
+                ? `HPP Setelah: ${typeof formatRupiah === 'function' ? formatRupiah(conv.target_hpp_after || 0) : 'Rp ' + Number(conv.target_hpp_after || 0).toLocaleString('id-ID')}`
+                : '';
+        }
+
+        // Rasio & Info Nilai
+        const ratioEl = document.getElementById('conv-detail-ratio');
+        if (ratioEl) {
+            const ratio = (conv.target_qty / conv.source_qty).toFixed(4).replace(/\.?0+$/, '');
+            ratioEl.textContent = `1 ${conv.source_unit} ≈ ${ratio} ${conv.target_unit}`;
+        }
+
+        const movedValEl = document.getElementById('conv-detail-moved-val');
+        if (movedValEl) {
+            movedValEl.textContent = canSeeVal
+                ? (typeof formatRupiah === 'function' ? formatRupiah(conv.moved_value || 0) : 'Rp ' + Number(conv.moved_value || 0).toLocaleString('id-ID'))
+                : '-';
+        }
+
+        const targetBeforeEl = document.getElementById('conv-detail-target-before');
+        if (targetBeforeEl) {
+            targetBeforeEl.textContent = canSeeVal
+                ? `Stok: ${parseFloat(conv.target_stock_before || 0)} | HPP: ${typeof formatRupiah === 'function' ? formatRupiah(conv.target_hpp_before || 0) : 'Rp ' + Number(conv.target_hpp_before || 0).toLocaleString('id-ID')}`
+                : '-';
+        }
+
+        const targetAfterEl = document.getElementById('conv-detail-target-after');
+        if (targetAfterEl) {
+            targetAfterEl.textContent = canSeeVal
+                ? (typeof formatRupiah === 'function' ? formatRupiah(conv.target_hpp_after || 0) : 'Rp ' + Number(conv.target_hpp_after || 0).toLocaleString('id-ID'))
+                : '-';
+        }
+
+        // Info Pembuat
+        const creatorEl = document.getElementById('conv-detail-creator');
+        const createdAtEl = document.getElementById('conv-detail-created-at');
+        if (creatorEl) creatorEl.textContent = conv.created_by_name || '-';
+        if (createdAtEl) createdAtEl.textContent = conv.created_at ? String(conv.created_at).replace('T', ' ').slice(0, 19) : '-';
+
+        // Info Pembatalan
+        const cancelSection = document.getElementById('conv-detail-cancelled-section');
+        const cancellerEl = document.getElementById('conv-detail-canceller');
+        const cancelledAtEl = document.getElementById('conv-detail-cancelled-at');
+        const cancelReasonEl = document.getElementById('conv-detail-cancel-reason');
+        if (cancelSection) {
+            if (conv.status === 'cancelled') {
+                cancelSection.style.display = 'block';
+                if (cancellerEl) cancellerEl.textContent = conv.cancelled_by_name || '-';
+                if (cancelledAtEl) cancelledAtEl.textContent = conv.cancelled_at ? String(conv.cancelled_at).replace('T', ' ').slice(0, 19) : '-';
+                if (cancelReasonEl) cancelReasonEl.textContent = conv.cancel_reason || '-';
+            } else {
+                cancelSection.style.display = 'none';
+            }
+        }
+
+        // Catatan
+        const notesEl = document.getElementById('conv-detail-notes');
+        if (notesEl) notesEl.textContent = conv.notes || '-';
+
+        // Tombol Batalkan Konversi (hanya tampil jika status posted)
+        const btnCancel = document.getElementById('btn-trigger-cancel-conv');
+        if (btnCancel) {
+            btnCancel.style.display = (conv.status === 'posted') ? 'inline-flex' : 'none';
+        }
+
+        applyRoleRestrictions();
+        openModal('modal-detail-conversion');
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (e) {
+        console.error('Error viewing conversion detail:', e);
+        showToast(e.message, 'error');
+    }
+}
+
+function promptCancelConversion() {
+    if (!currentActiveConversionDetail) return;
+    const targetIdInput = document.getElementById('conv-cancel-target-id');
+    if (targetIdInput) targetIdInput.value = currentActiveConversionDetail.id;
+
+    const reasonInput = document.getElementById('conv-cancel-reason-input');
+    if (reasonInput) reasonInput.value = '';
+
+    closeModal('modal-detail-conversion');
+    openModal('modal-cancel-conversion');
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function submitCancelConversion() {
+    const reasonInput = document.getElementById('conv-cancel-reason-input');
+    const reason = (reasonInput?.value || '').trim();
+
+    if (!reason) {
+        showToast('Alasan pembatalan wajib diisi', 'error');
+        return;
+    }
+
+    if (!currentActiveConversionDetail) {
+        showToast('Data konversi tidak valid', 'error');
+        return;
+    }
+
+    const confirmed = confirm(
+        `Konfirmasi Pembatalan Dokumen Konversi:\n\n` +
+        `Nomor: ${currentActiveConversionDetail.number}\n` +
+        `Alasan: "${reason}"\n\n` +
+        `Stok sumber akan dikembalikan dan stok tujuan akan dikurangi. Lanjutkan pembatalan?`
+    );
+    if (!confirmed) return;
+
+    try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/conversions/${currentActiveConversionDetail.id}/cancel`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ cancel_reason: reason })
+        });
+
+        const json = await res.json();
+        if (!res.ok) {
+            throw new Error(json.error || 'Gagal membatalkan konversi');
+        }
+
+        showToast(json.message || 'Konversi berhasil dibatalkan', 'success');
+        closeModal('modal-cancel-conversion');
+        loadConversionsPage(conversionsCurrentPage);
+
+        // Refresh master products in POS/dashboard if needed
+        if (typeof fetchProducts === 'function') fetchProducts();
+    } catch (e) {
+        console.error('Error cancelling conversion:', e);
+        showToast(e.message, 'error');
+    }
+}
+
+// Window attachments for inline HTML handlers
+window.loadConversionsPage = loadConversionsPage;
+window.debounceConversionsSearch = debounceConversionsSearch;
+window.resetConversionsFilter = resetConversionsFilter;
+window.openCreateConversionModal = openCreateConversionModal;
+window.onConvSourceProductChanged = onConvSourceProductChanged;
+window.onConvTargetProductChanged = onConvTargetProductChanged;
+window.updateConversionRatioInfo = updateConversionRatioInfo;
+window.submitCreateConversion = submitCreateConversion;
+window.viewConversionDetail = viewConversionDetail;
+window.promptCancelConversion = promptCancelConversion;
+window.submitCancelConversion = submitCancelConversion;
+

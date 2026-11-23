@@ -20,6 +20,26 @@ process.on('unhandledRejection', (reason) => {
 
 const SECRET_KEY = process.env.JWT_SECRET || 'supplierpro_secret_key_demo';
 
+// ─── Shared Password Helper (Login, Admin Reset, Ganti Password Sendiri) ─────
+const PASSWORD_SALT_ROUNDS = 10;
+
+async function hashPassword(plaintext) {
+  if (!plaintext || typeof plaintext !== 'string') {
+    throw new Error('Password harus berupa string non-kosong');
+  }
+  return bcrypt.hash(plaintext, PASSWORD_SALT_ROUNDS);
+}
+
+async function verifyPassword(plaintext, hash) {
+  if (!plaintext || !hash) return false;
+  const isBcrypt = typeof hash === 'string' && (hash.startsWith('$2b$') || hash.startsWith('$2a$'));
+  if (isBcrypt) {
+    return bcrypt.compare(plaintext, hash);
+  }
+  // Fallback untuk legacy plaintext password (tidak auto-mengubah DB di helper)
+  return plaintext === hash;
+}
+
 const getTodayWITA = () => {
   try {
     return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Makassar' }).format(new Date());
@@ -738,6 +758,25 @@ async function generatePurchaseReturnId(pgClient, returnDate) {
 }
 
 /**
+ * Generate Product Conversion ID: KNV-{YYYY}-{NNNNN}
+ */
+async function generateConversionNo(pgClient, conversionDate) {
+  const d = conversionDate ? new Date(conversionDate) : new Date();
+  const year = d.getFullYear();
+
+  await pgClient.query(
+    `INSERT INTO conversion_counters (year, last_number) VALUES (?, LAST_INSERT_ID(1))
+     ON DUPLICATE KEY UPDATE last_number = LAST_INSERT_ID(last_number + 1)`,
+    [year]
+  );
+
+  const result = await pgClient.query('SELECT LAST_INSERT_ID() AS next_number');
+  const nextNum = Number(result.rows[0].next_number);
+  const padded = String(nextNum).padStart(5, '0');
+  return `KNV-${year}-${padded}`;
+}
+
+/**
  * Record stock move entry in the current transaction/connection
  * CRITICAL RULE: NO financial data (price, cost, HPP, cash) stored here!
  */
@@ -832,6 +871,49 @@ const authorizeRoles = (...allowedRoles) => {
 
 // ======================= API ROUTES =======================
 
+// ─── Price & Cost Access Control Helpers ─────────────────────────────────────
+// Role kasir tidak boleh menerima field HPP / harga pokok
+const HPP_RESTRICTED_ROLES = ['kasir'];
+function isHppRestricted(req) {
+  return HPP_RESTRICTED_ROLES.includes((req.user?.role || '').toLowerCase());
+}
+function stripHppFields(row) {
+  const r = { ...row };
+  delete r.cost_price;
+  delete r.cost_price_snapshot;
+  delete r.hpp;
+  delete r.cost;
+  delete r.total_cost;
+  delete r.total_stock_value;
+  return r;
+}
+
+// Role gudang tidak boleh menerima field Harga Jual produk
+const SELL_PRICE_RESTRICTED_ROLES = ['gudang'];
+function isSellPriceRestricted(req) {
+  return SELL_PRICE_RESTRICTED_ROLES.includes((req.user?.role || '').toLowerCase());
+}
+function stripSellPriceFields(row) {
+  const r = { ...row };
+  delete r.sell_price;
+  delete r.harga_efektif;
+  delete r.harga_master;
+  delete r.harga_pricelist;
+  return r;
+}
+
+function sanitizeProductRow(row, req) {
+  let r = { ...row };
+  if (isHppRestricted(req)) {
+    r = stripHppFields(r);
+  }
+  if (isSellPriceRestricted(req)) {
+    r = stripSellPriceFields(r);
+  }
+  return r;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── Health Check Endpoints (tanpa auth, untuk diagnostik hosting) ───────────
 // Buka di browser: https://yourdomain.com/health
 app.get('/health', (req, res) => {
@@ -890,23 +972,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error_code: 'INVALID_CREDENTIALS', error: 'Username atau password salah' });
     }
 
-    const isBcryptHash = user.password_hash.startsWith('$2b$') || user.password_hash.startsWith('$2a$');
-    let isMatch = false;
-
-    if (isBcryptHash) {
-      isMatch = await bcrypt.compare(password, user.password_hash);
-    } else {
-      if (password === user.password_hash) {
-        isMatch = true;
-        try {
-          const newHash = await bcrypt.hash(password, 10);
-          await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, user.id]);
-        } catch (hashErr) {
-          console.error('Error auto-migrating user password to bcrypt:', hashErr);
-        }
-      }
-    }
-
+    const isMatch = await verifyPassword(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ error_code: 'INVALID_CREDENTIALS', error: 'Username atau password salah' });
     }
@@ -926,6 +992,72 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
     res.status(500).json({ error_code: 'SERVER_ERROR', error: err.message });
+  }
+});
+
+// PUT /api/auth/change-password — Ganti Password Sendiri untuk SEMUA role
+app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
+  const { password_lama, password_baru, konfirmasi_password } = req.body;
+  const userId = req.user && req.user.id;
+
+  if (!userId) {
+    return res.status(401).json({ error: 'Sesi tidak valid, silakan login ulang' });
+  }
+
+  // 1. Validasi keberadaan semua field
+  if (
+    !password_lama || !password_baru || !konfirmasi_password ||
+    typeof password_lama !== 'string' || typeof password_baru !== 'string' || typeof konfirmasi_password !== 'string' ||
+    password_lama.trim() === '' || password_baru.trim() === '' || konfirmasi_password.trim() === ''
+  ) {
+    return res.status(400).json({ error: 'Semua field wajib diisi' });
+  }
+
+  // 2. Validasi panjang minimal password baru (8 karakter)
+  if (password_baru.length < 8) {
+    return res.status(400).json({ error: 'Password baru minimal 8 karakter' });
+  }
+
+  // 3. Validasi password baru tidak boleh sama dengan password lama
+  if (password_baru === password_lama) {
+    return res.status(400).json({ error: 'Password baru tidak boleh sama dengan password lama' });
+  }
+
+  // 4. Validasi kecocokan konfirmasi password
+  if (password_baru !== konfirmasi_password) {
+    return res.status(400).json({ error: 'Konfirmasi password tidak cocok' });
+  }
+
+  try {
+    // Ambil user dari database berdasarkan ID dari token
+    const userRes = await pool.query('SELECT id, password_hash, active FROM users WHERE id = $1', [userId]);
+    const user = userRes.rows && userRes.rows[0];
+
+    if (!user || !user.active) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan atau nonaktif' });
+    }
+
+    // 5. Verifikasi password lama cocok dengan hash di DB
+    const isOldMatch = await verifyPassword(password_lama, user.password_hash);
+    if (!isOldMatch) {
+      return res.status(400).json({ error: 'Password lama salah' });
+    }
+
+    // 6. Hash password baru dengan helper bersama
+    const newHash = await hashPassword(password_baru);
+
+    // 7. Update database baris user ini saja
+    const updateRes = await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, userId]);
+    const affected = updateRes.affectedRows || updateRes.rowCount || 0;
+
+    if (affected !== 1) {
+      return res.status(500).json({ error: 'Gagal memperbarui password di database' });
+    }
+
+    res.json({ success: true, message: 'Password berhasil diubah' });
+  } catch (err) {
+    console.error('[CHANGE PASSWORD ERROR]', err.message);
+    res.status(500).json({ error: 'Terjadi kesalahan saat mengganti password' });
   }
 });
 
@@ -1120,7 +1252,7 @@ app.put('/api/pengaturan/landing-demo', authenticateToken, authorizeRoles('admin
 });
 
 // --- Settings Routes ---
-app.get('/api/settings', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+app.get('/api/settings', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM settings');
     const settingsMap = {};
@@ -1347,8 +1479,20 @@ app.get('/api/dashboard/sales-composition', authenticateToken, authorizeRoles('a
 // --- Products Routes ---
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    const { customer_id, page, limit: limitQ, q, search, category, stock_status, status, paginate, all } = req.query;
+    const { customer_id, page, limit: limitQ, q, search, category, stock_status, status, paginate, all, sort } = req.query;
     const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const PRODUCT_SORT_MAP = {
+      name_asc: "CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, LOWER(p.name) ASC, p.id ASC",
+      name_desc: "CASE WHEN p.name IS NULL OR p.name = '' THEN 1 ELSE 0 END, LOWER(p.name) DESC, p.id ASC",
+      sku_asc: "CASE WHEN p.sku IS NULL OR p.sku = '' THEN 1 ELSE 0 END, LOWER(REGEXP_REPLACE(p.sku, '[0-9]+$', '')) ASC, CASE WHEN p.sku REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(REGEXP_SUBSTR(p.sku, '[0-9]+$') AS UNSIGNED) ASC, LOWER(p.sku) ASC, LOWER(p.name) ASC, p.id ASC",
+      sku_desc: "CASE WHEN p.sku IS NULL OR p.sku = '' THEN 1 ELSE 0 END, LOWER(REGEXP_REPLACE(p.sku, '[0-9]+$', '')) DESC, CASE WHEN p.sku REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(REGEXP_SUBSTR(p.sku, '[0-9]+$') AS UNSIGNED) DESC, LOWER(p.sku) DESC, LOWER(p.name) ASC, p.id ASC",
+      category_asc: "CASE WHEN c.name IS NULL OR c.name = '' THEN 1 ELSE 0 END, LOWER(c.name) ASC, LOWER(p.name) ASC, p.id ASC",
+      category_desc: "CASE WHEN c.name IS NULL OR c.name = '' THEN 1 ELSE 0 END, LOWER(c.name) DESC, LOWER(p.name) ASC, p.id ASC",
+      stock_asc: "p.stock ASC, LOWER(p.name) ASC, p.id ASC",
+      stock_desc: "p.stock DESC, LOWER(p.name) ASC, p.id ASC"
+    };
+    const sortClause = PRODUCT_SORT_MAP[sort] || "p.name ASC, p.id ASC";
 
     const whereConditions = [];
     const params = [];
@@ -1427,7 +1571,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           LEFT JOIN pricelists pl ON pl.id = cust.pricelist_id AND pl.is_active = 1
           LEFT JOIN pricelist_items pi ON pi.pricelist_id = pl.id AND pi.product_id = p.id
           ${whereClause}
-          ORDER BY p.name ASC, p.id ASC
+          ORDER BY ${sortClause}
           LIMIT ? OFFSET ?
         `;
         dataParams = [customer_id, ...params, limitNum, offset];
@@ -1453,15 +1597,17 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           LEFT JOIN product_categories c ON p.category_id = c.id 
           LEFT JOIN product_units u ON p.unit_id = u.id
           ${whereClause}
-          ORDER BY p.name ASC, p.id ASC
+          ORDER BY ${sortClause}
           LIMIT ? OFFSET ?
         `;
         dataParams = [...params, limitNum, offset];
       }
 
       const result = await pool.query(dataSql, dataParams);
+      const hppRestricted = isHppRestricted(req);
+      const sanitizedRows = result.rows.map(r => sanitizeProductRow(r, req));
       return res.json({
-        data: result.rows,
+        data: sanitizedRows,
         pagination: {
           page: pageNum,
           limit: limitNum,
@@ -1469,7 +1615,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
           totalPages: Math.ceil(total / limitNum) || 1
         },
         summary: {
-          totalStockValue
+          totalStockValue: hppRestricted ? undefined : totalStockValue
         }
       });
     }
@@ -1501,7 +1647,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         LEFT JOIN pricelists pl ON pl.id = cust.pricelist_id AND pl.is_active = 1
         LEFT JOIN pricelist_items pi ON pi.pricelist_id = pl.id AND pi.product_id = p.id
         ${whereClause}
-        ORDER BY p.name ASC, p.id ASC
+        ORDER BY ${sortClause}
       `, [customer_id, ...params]);
     } else {
       result = await pool.query(`
@@ -1525,10 +1671,11 @@ app.get('/api/products', authenticateToken, async (req, res) => {
         LEFT JOIN product_categories c ON p.category_id = c.id 
         LEFT JOIN product_units u ON p.unit_id = u.id
         ${whereClause}
-        ORDER BY p.name ASC, p.id ASC
+        ORDER BY ${sortClause}
       `, params);
     }
-    res.json(result.rows);
+    // Sanitize product rows for restricted roles (kasir: no HPP, gudang: no sell_price)
+    res.json(result.rows.map(r => sanitizeProductRow(r, req)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1547,7 +1694,8 @@ app.get('/api/products/:id', authenticateToken, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Produk tidak ditemukan' });
     }
-    res.json(result.rows[0]);
+    const productRow = sanitizeProductRow(result.rows[0], req);
+    res.json(productRow);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1561,7 +1709,9 @@ app.post('/api/products', authenticateToken, authorizeRoles('admin', 'gudang'), 
     const prefix = await getSetting('prefix_product', 'P');
     const nextId = await generateNextId(pool, 'products', prefix);
     const targetId = id || nextId;
-    await pool.query(insertQuery, [targetId, sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id || 'PU-1']);
+    const targetCostPrice = isHppRestricted(req) ? 0 : (parseFloat(cost_price) || 0);
+    const targetSellPrice = isSellPriceRestricted(req) ? 0 : (parseFloat(sell_price) || 0);
+    await pool.query(insertQuery, [targetId, sku, brandVal, name, category_id, targetCostPrice, targetSellPrice, stock, min_stock, unit_id || 'PU-1']);
     if (parseFloat(stock || 0) > 0) {
       await recordStockMove(pool, {
         product_id: targetId,
@@ -1589,10 +1739,15 @@ app.put('/api/products/:id', authenticateToken, authorizeRoles('admin', 'gudang'
   const brandVal = (brand !== undefined && brand !== null && String(brand).trim() !== '') ? String(brand).trim() : null;
   const updateQuery = 'UPDATE products SET sku = $1, brand = $2, name = $3, category_id = $4, cost_price = $5, sell_price = $6, stock = $7, min_stock = $8, unit_id = $9 WHERE id = $10';
   try {
-    const curRes = await pool.query('SELECT stock FROM products WHERE id = $1', [id]);
+    const curRes = await pool.query('SELECT stock, cost_price, sell_price FROM products WHERE id = $1', [id]);
+    if (curRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Produk tidak ditemukan' });
+    }
     const oldStock = parseFloat(curRes.rows[0]?.stock || 0);
     const newStock = parseFloat(stock !== undefined ? stock : oldStock);
-    const result = await pool.query(updateQuery, [sku, brandVal, name, category_id, cost_price, sell_price, stock, min_stock, unit_id, id]);
+    const targetCostPrice = (isHppRestricted(req) || cost_price === undefined) ? curRes.rows[0].cost_price : cost_price;
+    const targetSellPrice = (isSellPriceRestricted(req) || sell_price === undefined) ? curRes.rows[0].sell_price : sell_price;
+    const result = await pool.query(updateQuery, [sku, brandVal, name, category_id, targetCostPrice, targetSellPrice, stock, min_stock, unit_id, id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Produk tidak ditemukan' });
     }
@@ -1749,8 +1904,20 @@ const CUSTOMER_SELECT_SQL = `
 
 app.get('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir', 'finance', 'owner'), async (req, res) => {
   try {
-    const { page, limit: limitQ, q, search, category, type, paginate, all } = req.query;
+    const { page, limit: limitQ, q, search, category, type, paginate, all, sort } = req.query;
     const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const CUSTOMER_SORT_MAP = {
+      name_asc: "CASE WHEN c.name IS NULL OR c.name = '' THEN 1 ELSE 0 END, LOWER(c.name) ASC, c.id ASC",
+      name_desc: "CASE WHEN c.name IS NULL OR c.name = '' THEN 1 ELSE 0 END, LOWER(c.name) DESC, c.id ASC",
+      id_asc: "CASE WHEN c.id IS NULL OR c.id = '' THEN 1 ELSE 0 END, LOWER(REGEXP_REPLACE(c.id, '[0-9]+$', '')) ASC, CASE WHEN c.id REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(REGEXP_SUBSTR(c.id, '[0-9]+$') AS UNSIGNED) ASC, c.id ASC",
+      id_desc: "CASE WHEN c.id IS NULL OR c.id = '' THEN 1 ELSE 0 END, LOWER(REGEXP_REPLACE(c.id, '[0-9]+$', '')) DESC, CASE WHEN c.id REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(REGEXP_SUBSTR(c.id, '[0-9]+$') AS UNSIGNED) DESC, c.id DESC",
+      type_asc: "CASE WHEN cc.name IS NULL OR cc.name = '' THEN 1 ELSE 0 END, LOWER(cc.name) ASC, LOWER(c.name) ASC, c.id ASC",
+      type_desc: "CASE WHEN cc.name IS NULL OR cc.name = '' THEN 1 ELSE 0 END, LOWER(cc.name) DESC, LOWER(c.name) ASC, c.id ASC",
+      total_belanja_asc: "total_belanja ASC, LOWER(c.name) ASC, c.id ASC",
+      total_belanja_desc: "total_belanja DESC, LOWER(c.name) ASC, c.id ASC"
+    };
+    const sortClause = CUSTOMER_SORT_MAP[sort] || "c.name ASC, c.id ASC";
 
     const whereConditions = [];
     const params = [];
@@ -1787,7 +1954,7 @@ app.get('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir', 'f
       const dataSql = CUSTOMER_SELECT_SQL + `
         ${whereClause}
         GROUP BY c.id, cc.name, pl.nama, pl.kode, pt.name
-        ORDER BY c.name ASC, c.id ASC
+        ORDER BY ${sortClause}
         LIMIT ? OFFSET ?
       `;
       const dataParams = [...params, limitNum, offset];
@@ -1808,7 +1975,7 @@ app.get('/api/customers', authenticateToken, authorizeRoles('admin', 'kasir', 'f
       CUSTOMER_SELECT_SQL + `
       ${whereClause}
       GROUP BY c.id, cc.name, pl.nama, pl.kode, pt.name
-      ORDER BY c.name ASC, c.id ASC
+      ORDER BY ${sortClause}
     `, params);
     res.json(result.rows);
   } catch (err) {
@@ -2386,8 +2553,16 @@ app.delete('/api/pricelists/:id/items/:productId', authenticateToken, authorizeR
 // --- Vendors Routes ---
 app.get('/api/vendors', authenticateToken, authorizeRoles('admin', 'gudang', 'finance'), async (req, res) => {
   try {
-    const { page, limit: limitQ, q, search, category, paginate, all } = req.query;
+    const { page, limit: limitQ, q, search, category, paginate, all, sort } = req.query;
     const isPaginated = (page !== undefined || paginate === 'true') && all !== 'true' && limitQ !== 'all';
+
+    const VENDOR_SORT_MAP = {
+      name_asc: "CASE WHEN v.name IS NULL OR v.name = '' THEN 1 ELSE 0 END, LOWER(v.name) ASC, v.id ASC",
+      name_desc: "CASE WHEN v.name IS NULL OR v.name = '' THEN 1 ELSE 0 END, LOWER(v.name) DESC, v.id ASC",
+      id_asc: "CASE WHEN v.id IS NULL OR v.id = '' THEN 1 ELSE 0 END, LOWER(REGEXP_REPLACE(v.id, '[0-9]+$', '')) ASC, CASE WHEN v.id REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(REGEXP_SUBSTR(v.id, '[0-9]+$') AS UNSIGNED) ASC, v.id ASC",
+      id_desc: "CASE WHEN v.id IS NULL OR v.id = '' THEN 1 ELSE 0 END, LOWER(REGEXP_REPLACE(v.id, '[0-9]+$', '')) DESC, CASE WHEN v.id REGEXP '[0-9]+$' THEN 0 ELSE 1 END, CAST(REGEXP_SUBSTR(v.id, '[0-9]+$') AS UNSIGNED) DESC, v.id DESC"
+    };
+    const sortClause = VENDOR_SORT_MAP[sort] || "v.name ASC, v.id ASC";
 
     const whereConditions = [];
     const params = [];
@@ -2434,7 +2609,7 @@ app.get('/api/vendors', authenticateToken, authorizeRoles('admin', 'gudang', 'fi
           COALESCE(po_agg.total_purchases, 0) AS total_purchases,
           COALESCE(po_agg.outstanding_debt, 0) AS outstanding_debt
         ${baseVendorSql}
-        ORDER BY v.name ASC, v.id ASC
+        ORDER BY ${sortClause}
         LIMIT ? OFFSET ?
       `;
       const result = await pool.query(dataSql, [...params, limitNum, offset]);
@@ -2455,7 +2630,7 @@ app.get('/api/vendors', authenticateToken, authorizeRoles('admin', 'gudang', 'fi
         COALESCE(po_agg.total_purchases, 0) AS total_purchases,
         COALESCE(po_agg.outstanding_debt, 0) AS outstanding_debt
       ${baseVendorSql}
-      ORDER BY v.name ASC, v.id ASC
+      ORDER BY ${sortClause}
     `, params);
     res.json(result.rows);
   } catch (err) {
@@ -2631,13 +2806,12 @@ app.get('/api/invoices/:id/items', authenticateToken, authorizeRoles('admin', 'k
       LEFT JOIN products p ON p.id = ii.product_id
       WHERE ii.invoice_id = $1
     `, [req.params.id]);
-    // Security: strip fee fields from non-admin responses
+    // Security: strip fee fields from non-admin responses; strip HPP for restricted roles
     const rows = result.rows.map(row => {
-      if (req.user.role !== 'admin') {
-        const { customer_fee, fee_notes, ...rest } = row;
-        return rest;
-      }
-      return row;
+      let r = { ...row };
+      if (req.user.role !== 'admin') { const { customer_fee, fee_notes, ...rest } = r; r = rest; }
+      if (isHppRestricted(req)) { delete r.cost_price_snapshot; }
+      return r;
     });
     res.json(rows);
   } catch (err) {
@@ -4192,6 +4366,45 @@ pool.query(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS status VARCHA
     `);
     await pool.query("INSERT IGNORE INTO settings (`key`, value) VALUES ('prefix_purchase_payment', 'POP-{YYYY}-{MM}-')");
     console.log('[Migration] purchase_order_payments & purchase_payment_counters tables ensured');
+
+    // Auto-migrasi tabel konversi produk & counter
+    // Collation: utf8mb4_general_ci (default lokal); di Hostinger tabel sudah dibuat via SQL import
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conversion_counters (
+        year INT NOT NULL PRIMARY KEY,
+        last_number INT NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS product_conversions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        number VARCHAR(50) NOT NULL,
+        date DATE NOT NULL,
+        source_product_id VARCHAR(255) NOT NULL,
+        target_product_id VARCHAR(255) NOT NULL,
+        source_qty DECIMAL(20,4) NOT NULL,
+        target_qty DECIMAL(20,4) NOT NULL,
+        source_hpp_snapshot DECIMAL(20,4) NOT NULL DEFAULT 0.0000,
+        moved_value DECIMAL(20,4) NOT NULL DEFAULT 0.0000,
+        target_stock_before DECIMAL(20,4) NOT NULL DEFAULT 0.0000,
+        target_hpp_before DECIMAL(20,4) NOT NULL DEFAULT 0.0000,
+        target_hpp_after DECIMAL(20,4) NOT NULL DEFAULT 0.0000,
+        notes TEXT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'posted',
+        created_by INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        cancelled_by INT NULL,
+        cancelled_at DATETIME NULL,
+        cancel_reason TEXT NULL,
+        UNIQUE KEY uq_pc_number (number),
+        KEY idx_pc_date (date),
+        KEY idx_pc_status (status),
+        KEY idx_pc_source (source_product_id),
+        KEY idx_pc_target (target_product_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+    `);
+    await pool.query("INSERT IGNORE INTO settings (`key`, value) VALUES ('prefix_conversion', 'KNV-{YYYY}-')");
+    console.log('[Migration] product_conversions & conversion_counters tables ensured');
   } catch (err) {
     console.error('[Migration] Failed to execute migrations:', err.message);
   }
@@ -6903,7 +7116,7 @@ app.post('/api/users', authenticateToken, authorizeRoles('admin'), async (req, r
     if (targetPassword.length < 6) {
       return res.status(400).json({ error: 'Password minimal 6 karakter' });
     }
-    const hashedPassword = await bcrypt.hash(targetPassword, 10);
+    const hashedPassword = await hashPassword(targetPassword);
     await pool.query(
       'INSERT INTO users (username, name, email, password_hash, role, active) VALUES ($1, $2, $3, $4, $5, $6)',
       [username, name, email, hashedPassword, role || 'kasir', active !== undefined ? active : true]
@@ -6916,12 +7129,29 @@ app.post('/api/users', authenticateToken, authorizeRoles('admin'), async (req, r
 
 app.put('/api/users/:id', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   const { id } = req.params;
-  const { name, email, role, active } = req.body;
+  const { name, email, role, active, password } = req.body;
   try {
-    await pool.query(
-      'UPDATE users SET name = $1, email = $2, role = $3, active = $4 WHERE id = $5',
-      [name, email, role, active, id]
-    );
+    let result;
+    if (password && typeof password === 'string' && password.trim().length > 0) {
+      const cleanPassword = password.trim();
+      if (cleanPassword.length < 6) {
+        return res.status(400).json({ error: 'Password minimal 6 karakter' });
+      }
+      const hashedPassword = await hashPassword(cleanPassword);
+      result = await pool.query(
+        'UPDATE users SET name = $1, email = $2, role = $3, active = $4, password_hash = $5 WHERE id = $6',
+        [name, email, role, active, hashedPassword, id]
+      );
+    } else {
+      result = await pool.query(
+        'UPDATE users SET name = $1, email = $2, role = $3, active = $4 WHERE id = $5',
+        [name, email, role, active, id]
+      );
+    }
+    const affected = result.affectedRows || result.rowCount || 0;
+    if (affected === 0) {
+      return res.status(404).json({ error: 'Staff tidak ditemukan' });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -6948,9 +7178,8 @@ app.get('/login', (req, res) => {
 // One-time setup function that runs on server start to seed superadmin
 (async () => {
   try {
-    const bcrypt = require('bcryptjs');
     const newAdminPassword = 'Admin@2026';
-    const hashedPassword = await bcrypt.hash(newAdminPassword, 10);
+    const hashedPassword = await hashPassword(newAdminPassword);
     
     await pool.query(`
       INSERT IGNORE INTO users (username, name, email, password_hash, role, active)
@@ -9463,6 +9692,483 @@ app.get('/api/stock-moves', authenticateToken, authorizeRoles('admin', 'gudang',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================================
+// FITUR: KONVERSI PRODUK (Carton -> Kg / Satuan Lain)
+// Akses: Admin & Gudang (Gudang tidak melihat HPP / nilai)
+// =========================================================================
+
+// GET /api/conversions — Daftar dokumen konversi produk
+app.get('/api/conversions', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  try {
+    const { page, limit, search, status, startDate, endDate, date_from, date_to } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 80);
+    const offset = (pageNum - 1) * limitNum;
+
+    const whereConditions = [];
+    const params = [];
+
+    const searchQuery = (search || '').trim();
+    if (searchQuery) {
+      whereConditions.push('(pc.number LIKE ? OR sp.name LIKE ? OR sp.sku LIKE ? OR tp.name LIKE ? OR tp.sku LIKE ? OR pc.notes LIKE ?)');
+      const pattern = `%${searchQuery}%`;
+      params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    }
+
+    const filterStatus = (status || '').trim().toLowerCase();
+    if (filterStatus && filterStatus !== 'all') {
+      whereConditions.push('pc.status = ?');
+      params.push(filterStatus);
+    }
+
+    const fromDate = date_from || startDate;
+    if (fromDate) {
+      whereConditions.push('pc.date >= ?');
+      params.push(fromDate);
+    }
+
+    const toDate = date_to || endDate;
+    if (toDate) {
+      whereConditions.push('pc.date <= ?');
+      params.push(toDate);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const countRes = await pool.query(`
+      SELECT COUNT(*) as total
+      FROM product_conversions pc
+      JOIN products sp ON sp.id = pc.source_product_id COLLATE utf8mb4_unicode_ci
+      JOIN products tp ON tp.id = pc.target_product_id COLLATE utf8mb4_unicode_ci
+      ${whereClause}
+    `, params);
+    const total = parseInt(countRes.rows[0]?.total || 0, 10);
+
+    const dataRes = await pool.query(`
+      SELECT pc.id, pc.number, pc.date,
+             pc.source_product_id, pc.source_qty,
+             pc.target_product_id, pc.target_qty,
+             pc.source_hpp_snapshot, pc.moved_value,
+             pc.target_stock_before, pc.target_hpp_before, pc.target_hpp_after,
+             pc.notes, pc.status, pc.created_at, pc.cancelled_at, pc.cancel_reason,
+             sp.name AS source_product_name, sp.sku AS source_product_sku, su.name AS source_unit_name,
+             tp.name AS target_product_name, tp.sku AS target_product_sku, tu.name AS target_unit_name,
+             u.name AS creator_name, cu.name AS canceller_name
+      FROM product_conversions pc
+      JOIN products sp ON sp.id = pc.source_product_id COLLATE utf8mb4_unicode_ci
+      LEFT JOIN product_units su ON su.id = sp.unit_id
+      JOIN products tp ON tp.id = pc.target_product_id COLLATE utf8mb4_unicode_ci
+      LEFT JOIN product_units tu ON tu.id = tp.unit_id
+      LEFT JOIN users u ON u.id = pc.created_by
+      LEFT JOIN users cu ON cu.id = pc.cancelled_by
+      ${whereClause}
+      ORDER BY pc.date DESC, pc.id DESC
+      LIMIT ? OFFSET ?
+    `, [...params, limitNum, offset]);
+
+    const isGudang = (req.user?.role || '').toLowerCase() === 'gudang';
+
+    const data = dataRes.rows.map(r => {
+      const row = {
+        id: r.id,
+        number: r.number,
+        date: r.date ? formatDateStr(r.date) : '',
+        source_product_id: r.source_product_id,
+        source_product_name: r.source_product_name,
+        source_product_sku: r.source_product_sku || '-',
+        source_unit: r.source_unit_name || '-',
+        source_qty: parseFloat(r.source_qty || 0),
+        target_product_id: r.target_product_id,
+        target_product_name: r.target_product_name,
+        target_product_sku: r.target_product_sku || '-',
+        target_unit: r.target_unit_name || '-',
+        target_qty: parseFloat(r.target_qty || 0),
+        notes: r.notes || '-',
+        status: r.status,
+        created_at: r.created_at,
+        created_by_name: r.creator_name || 'Sistem',
+        cancelled_at: r.cancelled_at,
+        cancelled_by_name: r.canceller_name || null,
+        cancel_reason: r.cancel_reason || null
+      };
+
+      // Visibilitas HPP: gudang TIDAK melihat nilai / HPP
+      if (!isGudang) {
+        row.source_hpp_snapshot = parseFloat(r.source_hpp_snapshot || 0);
+        row.moved_value = parseFloat(r.moved_value || 0);
+        row.target_stock_before = parseFloat(r.target_stock_before || 0);
+        row.target_hpp_before = parseFloat(r.target_hpp_before || 0);
+        row.target_hpp_after = parseFloat(r.target_hpp_after || 0);
+      }
+
+      return row;
+    });
+
+    res.json({
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/conversions/:id — Detail dokumen konversi
+app.get('/api/conversions/:id', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  try {
+    const convId = req.params.id;
+    const dataRes = await pool.query(`
+      SELECT pc.id, pc.number, pc.date,
+             pc.source_product_id, pc.source_qty,
+             pc.target_product_id, pc.target_qty,
+             pc.source_hpp_snapshot, pc.moved_value,
+             pc.target_stock_before, pc.target_hpp_before, pc.target_hpp_after,
+             pc.notes, pc.status, pc.created_at, pc.cancelled_at, pc.cancel_reason,
+             sp.name AS source_product_name, sp.sku AS source_product_sku, su.name AS source_unit_name,
+             tp.name AS target_product_name, tp.sku AS target_product_sku, tu.name AS target_unit_name,
+             u.name AS creator_name, cu.name AS canceller_name
+      FROM product_conversions pc
+      JOIN products sp ON sp.id = pc.source_product_id COLLATE utf8mb4_unicode_ci
+      LEFT JOIN product_units su ON su.id = sp.unit_id
+      JOIN products tp ON tp.id = pc.target_product_id COLLATE utf8mb4_unicode_ci
+      LEFT JOIN product_units tu ON tu.id = tp.unit_id
+      LEFT JOIN users u ON u.id = pc.created_by
+      LEFT JOIN users cu ON cu.id = pc.cancelled_by
+      WHERE pc.id = ? OR pc.number = ?
+      LIMIT 1
+    `, [convId, convId]);
+
+    if (dataRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Dokumen konversi tidak ditemukan' });
+    }
+
+    const r = dataRes.rows[0];
+    const isGudang = (req.user?.role || '').toLowerCase() === 'gudang';
+
+    const result = {
+      id: r.id,
+      number: r.number,
+      date: r.date ? formatDateStr(r.date) : '',
+      source_product_id: r.source_product_id,
+      source_product_name: r.source_product_name,
+      source_product_sku: r.source_product_sku || '-',
+      source_unit: r.source_unit_name || '-',
+      source_qty: parseFloat(r.source_qty || 0),
+      target_product_id: r.target_product_id,
+      target_product_name: r.target_product_name,
+      target_product_sku: r.target_product_sku || '-',
+      target_unit: r.target_unit_name || '-',
+      target_qty: parseFloat(r.target_qty || 0),
+      notes: r.notes || '-',
+      status: r.status,
+      created_at: r.created_at,
+      created_by_name: r.creator_name || 'Sistem',
+      cancelled_at: r.cancelled_at,
+      cancelled_by_name: r.canceller_name || null,
+      cancel_reason: r.cancel_reason || null
+    };
+
+    if (!isGudang) {
+      result.source_hpp_snapshot = parseFloat(r.source_hpp_snapshot || 0);
+      result.moved_value = parseFloat(r.moved_value || 0);
+      result.target_stock_before = parseFloat(r.target_stock_before || 0);
+      result.target_hpp_before = parseFloat(r.target_hpp_before || 0);
+      result.target_hpp_after = parseFloat(r.target_hpp_after || 0);
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/conversions — Simpan dan posting konversi produk baru
+app.post('/api/conversions', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  const { date, source_product_id, source_qty, target_product_id, target_qty, notes } = req.body;
+
+  // 1. Validasi input dasar
+  if (!source_product_id || !target_product_id) {
+    return res.status(400).json({ error: 'Produk sumber dan produk tujuan wajib dipilih' });
+  }
+  if (source_product_id === target_product_id) {
+    return res.status(400).json({ error: 'Produk sumber dan produk tujuan tidak boleh sama' });
+  }
+
+  const sQty = parseFloat(source_qty);
+  const tQty = parseFloat(target_qty);
+  if (isNaN(sQty) || sQty <= 0) {
+    return res.status(400).json({ error: 'Qty sumber harus berupa angka lebih besar dari 0' });
+  }
+  if (isNaN(tQty) || tQty <= 0) {
+    return res.status(400).json({ error: 'Qty tujuan harus berupa angka lebih besar dari 0' });
+  }
+
+  const convDate = date ? formatDateStr(date) : getTodayWITA();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 2. Kunci (lock) kedua produk dengan urutan ID konsisten untuk mencegah deadlock
+    const sortedIds = [source_product_id, target_product_id].sort();
+    const prodsRes = await client.query(
+      'SELECT id, name, sku, stock, cost_price FROM products WHERE id IN (?, ?) FOR UPDATE',
+      [sortedIds[0], sortedIds[1]]
+    );
+
+    const prodMap = {};
+    prodsRes.rows.forEach(p => { prodMap[p.id] = p; });
+
+    const sourceProd = prodMap[source_product_id];
+    const targetProd = prodMap[target_product_id];
+
+    if (!sourceProd) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Produk sumber tidak ditemukan' });
+    }
+    if (!targetProd) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Produk tujuan tidak ditemukan' });
+    }
+
+    const currentSourceStock = parseFloat(sourceProd.stock || 0);
+    const currentSourceCost = parseFloat(sourceProd.cost_price || 0);
+    const currentTargetStock = parseFloat(targetProd.stock || 0);
+    const currentTargetCost = parseFloat(targetProd.cost_price || 0);
+
+    // 3. Validasi stok sumber mencukupi
+    if (currentSourceStock < sQty) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `Stok sumber tidak mencukupi untuk '${sourceProd.name}' (Tersedia: ${currentSourceStock}, Diminta: ${sQty})`
+      });
+    }
+
+    // 4. Perhitungan nilai & HPP rata-rata tertimbang
+    const movedValue = currentSourceCost * sQty;
+    const newSourceStock = currentSourceStock - sQty;
+
+    let newTargetCost = 0;
+    if (currentTargetStock <= 0) {
+      newTargetCost = movedValue / tQty;
+    } else {
+      newTargetCost = ((currentTargetStock * currentTargetCost) + movedValue) / (currentTargetStock + tQty);
+    }
+    const newTargetStock = currentTargetStock + tQty;
+
+    // 5. Update stok & HPP kedua produk
+    // Stok sumber berkurang, HPP sumber TIDAK berubah
+    await client.query('UPDATE products SET stock = ? WHERE id = ?', [newSourceStock, source_product_id]);
+    // Stok tujuan bertambah, HPP tujuan disesuaikan dengan weighted average
+    await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [newTargetStock, newTargetCost, target_product_id]);
+
+    // 6. Generate nomor dokumen KNV-{YYYY}-{NNNNN}
+    const convNo = await generateConversionNo(client, convDate);
+
+    // 7. Simpan dokumen product_conversions
+    const insRes = await client.query(`
+      INSERT INTO product_conversions (
+        number, date, source_product_id, source_qty, target_product_id, target_qty,
+        source_hpp_snapshot, moved_value, target_stock_before, target_hpp_before, target_hpp_after,
+        notes, status, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?)
+    `, [
+      convNo, convDate, source_product_id, sQty, target_product_id, tQty,
+      currentSourceCost, movedValue, currentTargetStock, currentTargetCost, newTargetCost,
+      notes ? notes.trim() : null, req.user.id
+    ]);
+    const convId = insRes.insertId || insRes.rows?.[0]?.id;
+
+    // 8. Catat 2 baris Stock Moves (tanpa nilai uang, hanya mutasi fisik)
+    // a. Keluar dari sumber
+    await recordStockMove(client, {
+      product_id: source_product_id,
+      tanggal: convDate + ' 12:00:00',
+      tipe: 'konversi_keluar',
+      ref_type: 'product_conversion',
+      ref_id: String(convNo),
+      ref_no: convNo,
+      qty_masuk: 0,
+      qty_keluar: sQty,
+      qty_sebelum: currentSourceStock,
+      qty_sesudah: newSourceStock,
+      keterangan: `Konversi keluar ke ${targetProd.name} (${convNo})`,
+      created_by: req.user.id
+    });
+
+    // b. Masuk ke tujuan
+    await recordStockMove(client, {
+      product_id: target_product_id,
+      tanggal: convDate + ' 12:00:00',
+      tipe: 'konversi_masuk',
+      ref_type: 'product_conversion',
+      ref_id: String(convNo),
+      ref_no: convNo,
+      qty_masuk: tQty,
+      qty_keluar: 0,
+      qty_sebelum: currentTargetStock,
+      qty_sesudah: newTargetStock,
+      keterangan: `Konversi masuk dari ${sourceProd.name} (${convNo})`,
+      created_by: req.user.id
+    });
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      id: convId,
+      number: convNo,
+      message: `Konversi produk ${convNo} berhasil disimpan`
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/conversions/:id/cancel — Batalkan dokumen konversi
+app.post('/api/conversions/:id/cancel', authenticateToken, authorizeRoles('admin', 'gudang'), async (req, res) => {
+  const { cancel_reason } = req.body;
+  if (!cancel_reason || typeof cancel_reason !== 'string' || !cancel_reason.trim()) {
+    return res.status(400).json({ error: 'Alasan pembatalan wajib diisi' });
+  }
+
+  const convId = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Ambil data dokumen konversi
+    const convRes = await client.query(
+      'SELECT * FROM product_conversions WHERE id = ? OR number = ? FOR UPDATE',
+      [convId, convId]
+    );
+    if (convRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Dokumen konversi tidak ditemukan' });
+    }
+
+    const conv = convRes.rows[0];
+    if (conv.status !== 'posted') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `Hanya konversi berstatus 'posted' yang dapat dibatalkan (Status saat ini: ${conv.status})`
+      });
+    }
+
+    // 2. Kunci kedua produk dengan urutan ID konsisten
+    const sortedIds = [conv.source_product_id, conv.target_product_id].sort();
+    const prodsRes = await client.query(
+      'SELECT id, name, sku, stock, cost_price FROM products WHERE id IN (?, ?) FOR UPDATE',
+      [sortedIds[0], sortedIds[1]]
+    );
+
+    const prodMap = {};
+    prodsRes.rows.forEach(p => { prodMap[p.id] = p; });
+
+    const sourceProd = prodMap[conv.source_product_id];
+    const targetProd = prodMap[conv.target_product_id];
+
+    if (!sourceProd || !targetProd) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Produk sumber atau produk tujuan tidak ditemukan di master produk' });
+    }
+
+    const currentTargetStock = parseFloat(targetProd.stock || 0);
+    const currentTargetCost = parseFloat(targetProd.cost_price || 0);
+    const currentSourceStock = parseFloat(sourceProd.stock || 0);
+
+    const tQty = parseFloat(conv.target_qty);
+    const sQty = parseFloat(conv.source_qty);
+    const movedVal = parseFloat(conv.moved_value);
+    const targetHppBefore = parseFloat(conv.target_hpp_before);
+
+    // 3. GUARD: Stok produk tujuan saat ini tidak boleh lebih kecil dari target_qty
+    if (currentTargetStock < tQty) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `Stok produk tujuan '${targetProd.name}' saat ini (${currentTargetStock}) lebih kecil dari qty hasil konversi (${tQty}). Stok hasil konversi sudah terpakai sebagian.`
+      });
+    }
+
+    // 4. Balikkan stok produk sumber (+ source_qty, HPP tetap)
+    const newSourceStock = currentSourceStock + sQty;
+    await client.query('UPDATE products SET stock = ? WHERE id = ?', [newSourceStock, conv.source_product_id]);
+
+    // 5. Balikkan stok & HPP produk tujuan
+    const remainingTargetStock = currentTargetStock - tQty;
+    let newTargetCost = 0;
+    if (remainingTargetStock === 0) {
+      newTargetCost = targetHppBefore;
+    } else {
+      newTargetCost = ((currentTargetStock * currentTargetCost) - movedVal) / remainingTargetStock;
+      if (newTargetCost < 0) newTargetCost = targetHppBefore;
+    }
+    await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [remainingTargetStock, newTargetCost, conv.target_product_id]);
+
+    // 6. Update status dokumen konversi ke cancelled
+    const nowDt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    await client.query(`
+      UPDATE product_conversions
+      SET status = 'cancelled',
+          cancelled_by = ?,
+          cancelled_at = ?,
+          cancel_reason = ?
+      WHERE id = ?
+    `, [req.user.id, nowDt, cancel_reason.trim(), conv.id]);
+
+    // 7. Catat 2 baris Stock Moves pembalik
+    // a. Tujuan keluar (batal_konversi)
+    await recordStockMove(client, {
+      product_id: conv.target_product_id,
+      tanggal: nowDt,
+      tipe: 'batal_konversi',
+      ref_type: 'product_conversion',
+      ref_id: String(conv.number),
+      ref_no: conv.number,
+      qty_masuk: 0,
+      qty_keluar: tQty,
+      qty_sebelum: currentTargetStock,
+      qty_sesudah: remainingTargetStock,
+      keterangan: `Pembatalan Konversi ${conv.number}: ${cancel_reason.trim()}`,
+      created_by: req.user.id
+    });
+
+    // b. Sumber masuk (batal_konversi)
+    await recordStockMove(client, {
+      product_id: conv.source_product_id,
+      tanggal: nowDt,
+      tipe: 'batal_konversi',
+      ref_type: 'product_conversion',
+      ref_id: String(conv.number),
+      ref_no: conv.number,
+      qty_masuk: sQty,
+      qty_keluar: 0,
+      qty_sebelum: currentSourceStock,
+      qty_sesudah: newSourceStock,
+      keterangan: `Pembatalan Konversi ${conv.number}: ${cancel_reason.trim()}`,
+      created_by: req.user.id
+    });
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: `Konversi ${conv.number} berhasil dibatalkan`
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 // =========================================================================

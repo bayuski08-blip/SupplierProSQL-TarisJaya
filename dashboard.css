@@ -719,6 +719,7 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .page-toolbar-right {
@@ -1150,6 +1151,18 @@
     font-size: 0.85rem;
     font-weight: 700;
     color: var(--gray-800);
+}
+
+.cart-qty-input {
+    width: 52px;
+    text-align: center;
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--gray-800);
+    border: 1px solid var(--gray-300);
+    border-radius: 0.25rem;
+    padding: 0.1rem 0.2rem;
+    background: white;
 }
 
 .cart-item-total {
@@ -2944,4 +2957,32 @@ body.modal-open {
     font-weight: 600;
     display: inline-block;
     margin-top: 3px;
+}
+
+/* Badges for Product Conversion */
+.badge-status.posted {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+
+.badge-status.cancelled {
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+}
+
+.badge-status.konversi_keluar {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.badge-status.konversi_masuk {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.badge-status.batal_konversi {
+    background: #fef3c7;
+    color: #92400e;
 }
