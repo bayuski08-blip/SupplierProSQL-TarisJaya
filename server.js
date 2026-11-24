@@ -58,7 +58,7 @@ const getMaxOrderDateWITA = (maxDays = 7) => {
     const today = getTodayWITA(); // 'YYYY-MM-DD'
     const [y, m, d] = today.split('-').map(Number);
     const dt = new Date(y, m - 1, d + maxDays);
-    return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
   } catch (e) {
     const d = new Date(Date.now() + 8 * 3600 * 1000 + maxDays * 86400 * 1000);
     return d.toISOString().split('T')[0];
@@ -158,9 +158,9 @@ const dbUrl = process.env.DATABASE_URL
 const urlParsed = new URL(dbUrl);
 
 const mysqlPool = mysql.createPool({
-  host:     urlParsed.hostname,
-  port:     parseInt(urlParsed.port) || 3306,
-  user:     urlParsed.username,
+  host: urlParsed.hostname,
+  port: parseInt(urlParsed.port) || 3306,
+  user: urlParsed.username,
   password: urlParsed.password,
   database: urlParsed.pathname.replace('/', ''),
   waitForConnections: true,
@@ -189,9 +189,9 @@ function pgify(conn) {
 
     // Intercept transaction keywords
     const trimmed = mysqlSql.trim().toUpperCase();
-    if (trimmed === 'BEGIN')    { await conn.query('START TRANSACTION'); return { rows: [], rowCount: 0 }; }
-    if (trimmed === 'COMMIT')   { await conn.query('COMMIT');            return { rows: [], rowCount: 0 }; }
-    if (trimmed === 'ROLLBACK') { await conn.query('ROLLBACK');          return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'BEGIN') { await conn.query('START TRANSACTION'); return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'COMMIT') { await conn.query('COMMIT'); return { rows: [], rowCount: 0 }; }
+    if (trimmed === 'ROLLBACK') { await conn.query('ROLLBACK'); return { rows: [], rowCount: 0 }; }
 
     const [result] = await conn.query(mysqlSql, params);
 
@@ -200,8 +200,8 @@ function pgify(conn) {
       return { rows: result, rowCount: result.length };
     } else {
       // INSERT / UPDATE / DELETE
-      const insertId  = result.insertId  || 0;
-      const affected  = result.affectedRows || 0;
+      const insertId = result.insertId || 0;
+      const affected = result.affectedRows || 0;
       // If RETURNING was requested expose id so callers using result.rows[0].id still work
       const rows = returningMatch ? [{ id: insertId || (params[0] ?? null) }] : [];
       return { rows, rowCount: affected, affectedRows: affected, insertId };
@@ -209,7 +209,7 @@ function pgify(conn) {
   };
 
   return {
-    query:   execQuery,
+    query: execQuery,
     release: () => (typeof conn.release === 'function' ? conn.release() : null),
   };
 }
@@ -336,8 +336,20 @@ pool.query(`
 
 // Auto-migrate: Batch B tables, counters, and deposit/return columns
 (async () => {
+  const ensureTable = async (name, ddlWithFk, ddlNoFk) => {
+    try {
+      await mysqlPool.query(ddlWithFk);
+    } catch (err) {
+      if (ddlNoFk) {
+        console.warn(`[Startup] ${name} FK DDL failed (${err.message}), retrying without FK...`);
+        await mysqlPool.query(ddlNoFk);
+      } else {
+        throw err;
+      }
+    }
+  };
   try {
-    await mysqlPool.query(`
+    await ensureTable('stock_moves', `
       CREATE TABLE IF NOT EXISTS stock_moves (
         id INT AUTO_INCREMENT PRIMARY KEY,
         product_id VARCHAR(255) NOT NULL,
@@ -360,18 +372,40 @@ pool.query(`
         INDEX idx_stock_moves_ref (ref_type, ref_id),
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, `
+      CREATE TABLE IF NOT EXISTS stock_moves (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id VARCHAR(255) NOT NULL,
+        tanggal DATETIME NOT NULL,
+        tipe VARCHAR(50) NOT NULL,
+        ref_type VARCHAR(50) NULL,
+        ref_id VARCHAR(255) NULL,
+        ref_no VARCHAR(255) NULL,
+        qty_masuk DECIMAL(20,4) NOT NULL DEFAULT 0,
+        qty_keluar DECIMAL(20,4) NOT NULL DEFAULT 0,
+        qty_sebelum DECIMAL(20,4) NOT NULL DEFAULT 0,
+        qty_sesudah DECIMAL(20,4) NOT NULL DEFAULT 0,
+        keterangan TEXT NULL,
+        created_by INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        is_backfill TINYINT(1) NOT NULL DEFAULT 0,
+        INDEX idx_stock_moves_product (product_id),
+        INDEX idx_stock_moves_tanggal (tanggal),
+        INDEX idx_stock_moves_tipe (tipe),
+        INDEX idx_stock_moves_ref (ref_type, ref_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    await mysqlPool.query(`
+    await ensureTable('return_counters', `
       CREATE TABLE IF NOT EXISTS return_counters (
         year INT NOT NULL PRIMARY KEY,
         last_sales_number INT NOT NULL DEFAULT 0,
         last_purchase_number INT NOT NULL DEFAULT 0
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    await mysqlPool.query(`
+    await ensureTable('sales_returns', `
       CREATE TABLE IF NOT EXISTS sales_returns (
         id VARCHAR(255) PRIMARY KEY,
         invoice_id VARCHAR(255) NOT NULL,
@@ -389,10 +423,26 @@ pool.query(`
         FOREIGN KEY (invoice_id) REFERENCES sales_invoices(id) ON DELETE RESTRICT,
         FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, `
+      CREATE TABLE IF NOT EXISTS sales_returns (
+        id VARCHAR(255) PRIMARY KEY,
+        invoice_id VARCHAR(255) NOT NULL,
+        customer_id VARCHAR(255) NULL,
+        date DATE NOT NULL,
+        total_refund DECIMAL(20,4) NOT NULL DEFAULT 0,
+        piutang_deduction DECIMAL(20,4) NOT NULL DEFAULT 0,
+        customer_deposit_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL,
+        user_id INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_sr_invoice (invoice_id),
+        INDEX idx_sr_customer (customer_id),
+        INDEX idx_sr_date (date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    await mysqlPool.query(`
+    await ensureTable('sales_return_items', `
       CREATE TABLE IF NOT EXISTS sales_return_items (
         id INT AUTO_INCREMENT PRIMARY KEY,
         return_id VARCHAR(255) NOT NULL,
@@ -407,10 +457,24 @@ pool.query(`
         INDEX idx_sri_product (product_id),
         FOREIGN KEY (return_id) REFERENCES sales_returns(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, `
+      CREATE TABLE IF NOT EXISTS sales_return_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        return_id VARCHAR(255) NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        quantity DECIMAL(20,4) NOT NULL,
+        condition_type VARCHAR(50) NOT NULL,
+        price DECIMAL(20,4) NOT NULL,
+        cost_price_snapshot DECIMAL(20,4) NOT NULL DEFAULT 0,
+        subtotal DECIMAL(20,4) NOT NULL DEFAULT 0,
+        refund_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        INDEX idx_sri_return (return_id),
+        INDEX idx_sri_product (product_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    await mysqlPool.query(`
+    await ensureTable('purchase_returns', `
       CREATE TABLE IF NOT EXISTS purchase_returns (
         id VARCHAR(255) PRIMARY KEY,
         purchase_order_id VARCHAR(255) NOT NULL,
@@ -428,10 +492,26 @@ pool.query(`
         FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE RESTRICT,
         FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, `
+      CREATE TABLE IF NOT EXISTS purchase_returns (
+        id VARCHAR(255) PRIMARY KEY,
+        purchase_order_id VARCHAR(255) NOT NULL,
+        vendor_id VARCHAR(255) NULL,
+        date DATE NOT NULL,
+        total_refund DECIMAL(20,4) NOT NULL DEFAULT 0,
+        hutang_deduction DECIMAL(20,4) NOT NULL DEFAULT 0,
+        vendor_deposit_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL,
+        user_id INT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_pr_po (purchase_order_id),
+        INDEX idx_pr_vendor (vendor_id),
+        INDEX idx_pr_date (date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    await mysqlPool.query(`
+    await ensureTable('purchase_return_items', `
       CREATE TABLE IF NOT EXISTS purchase_return_items (
         id INT AUTO_INCREMENT PRIMARY KEY,
         return_id VARCHAR(255) NOT NULL,
@@ -444,7 +524,19 @@ pool.query(`
         INDEX idx_pri_product (product_id),
         FOREIGN KEY (return_id) REFERENCES purchase_returns(id) ON DELETE CASCADE,
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `, `
+      CREATE TABLE IF NOT EXISTS purchase_return_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        return_id VARCHAR(255) NOT NULL,
+        product_id VARCHAR(255) NOT NULL,
+        quantity DECIMAL(20,4) NOT NULL,
+        cost DECIMAL(20,4) NOT NULL,
+        subtotal DECIMAL(20,4) NOT NULL DEFAULT 0,
+        refund_amount DECIMAL(20,4) NOT NULL DEFAULT 0,
+        INDEX idx_pri_return (return_id),
+        INDEX idx_pri_product (product_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
     const [custCols] = await mysqlPool.query("SHOW COLUMNS FROM customers LIKE 'deposit'");
@@ -497,7 +589,7 @@ pool.query(`
       );
     }
     // Clean up old unused payment type IDs PT-4 and PT-8
-    await pool.query(`DELETE FROM payment_types WHERE id IN ('PT-4', 'PT-8')`).catch(() => {});
+    await pool.query(`DELETE FROM payment_types WHERE id IN ('PT-4', 'PT-8')`).catch(() => { });
     console.log('[Startup] payment_types seeded/upgraded successfully.');
   } catch (err) {
     console.error('[Startup] Failed to seed payment_types:', err.message);
@@ -526,23 +618,23 @@ pool.query(`
 (async () => {
   // MySQL: UNIQUE constraint already defined in schema — no pg_constraint check needed
   const defaults = [
-    { name: 'Penjualan',              type: 'IN',   is_system: 1 },
-    { name: 'Pelunasan Piutang',      type: 'IN',   is_system: 1 },
-    { name: 'Pembelian Stok',         type: 'OUT',  is_system: 1 },
-    { name: 'Penyesuaian Stok',       type: 'OUT',  is_system: 1 },
-    { name: 'Pelunasan Hutang',       type: 'OUT',  is_system: 1 },
-    { name: 'Gaji & Tunjangan',       type: 'OUT',  is_system: 0 },
-    { name: 'Sewa',                   type: 'OUT',  is_system: 0 },
-    { name: 'Operasional',            type: 'OUT',  is_system: 0 },
-    { name: 'Marketing',              type: 'OUT',  is_system: 0 },
-    { name: 'Pajak',                  type: 'OUT',  is_system: 0 },
-    { name: 'Pembelian Aset',         type: 'OUT',  is_system: 0 },
-    { name: 'Prive Pemilik',          type: 'OUT',  is_system: 0 },
-    { name: 'Pengeluaran Lainnya',    type: 'OUT',  is_system: 0 },
-    { name: 'Pendapatan Lainnya',     type: 'IN',   is_system: 0 },
-    { name: 'Pinjaman Masuk',         type: 'IN',   is_system: 0 },
-    { name: 'Setoran Modal',          type: 'IN',   is_system: 0 },
-    { name: 'Transfer Antar Kas/Bank',type: 'BOTH', is_system: 0 },
+    { name: 'Penjualan', type: 'IN', is_system: 1 },
+    { name: 'Pelunasan Piutang', type: 'IN', is_system: 1 },
+    { name: 'Pembelian Stok', type: 'OUT', is_system: 1 },
+    { name: 'Penyesuaian Stok', type: 'OUT', is_system: 1 },
+    { name: 'Pelunasan Hutang', type: 'OUT', is_system: 1 },
+    { name: 'Gaji & Tunjangan', type: 'OUT', is_system: 0 },
+    { name: 'Sewa', type: 'OUT', is_system: 0 },
+    { name: 'Operasional', type: 'OUT', is_system: 0 },
+    { name: 'Marketing', type: 'OUT', is_system: 0 },
+    { name: 'Pajak', type: 'OUT', is_system: 0 },
+    { name: 'Pembelian Aset', type: 'OUT', is_system: 0 },
+    { name: 'Prive Pemilik', type: 'OUT', is_system: 0 },
+    { name: 'Pengeluaran Lainnya', type: 'OUT', is_system: 0 },
+    { name: 'Pendapatan Lainnya', type: 'IN', is_system: 0 },
+    { name: 'Pinjaman Masuk', type: 'IN', is_system: 0 },
+    { name: 'Setoran Modal', type: 'IN', is_system: 0 },
+    { name: 'Transfer Antar Kas/Bank', type: 'BOTH', is_system: 0 },
   ];
   try {
     for (const item of defaults) {
@@ -565,7 +657,7 @@ pool.query(`
             )
           ) sub
         )
-    `).catch(() => {}); // non-fatal
+    `).catch(() => { }); // non-fatal
     console.log('[Startup] cash_categories seeded/upgraded successfully.');
   } catch (err) {
     console.error('[Startup] Failed to seed cash_categories:', err.message);
@@ -872,8 +964,8 @@ const authorizeRoles = (...allowedRoles) => {
 // ======================= API ROUTES =======================
 
 // ─── Price & Cost Access Control Helpers ─────────────────────────────────────
-// Role kasir tidak boleh menerima field HPP / harga pokok
-const HPP_RESTRICTED_ROLES = ['kasir'];
+// Role kasir dan gudang tidak boleh menerima field HPP / harga pokok
+const HPP_RESTRICTED_ROLES = ['kasir', 'gudang'];
 function isHppRestricted(req) {
   return HPP_RESTRICTED_ROLES.includes((req.user?.role || '').toLowerCase());
 }
@@ -881,10 +973,16 @@ function stripHppFields(row) {
   const r = { ...row };
   delete r.cost_price;
   delete r.cost_price_snapshot;
+  delete r.hpp_satuan;
+  delete r.hpp_estimasi;
   delete r.hpp;
   delete r.cost;
   delete r.total_cost;
   delete r.total_stock_value;
+  delete r.laba;
+  delete r.margin;
+  delete r.margin_pct;
+  delete r.hpp_retur_rusak;
   return r;
 }
 
@@ -1308,27 +1406,55 @@ app.get('/api/dashboard/summary', authenticateToken, async (req, res) => {
     }
 
     if (canSeeFinance) {
-      // Revenue (omzet) - semua invoice yang tidak batal
-      const revenueResult = await pool.query("SELECT SUM(total) as revenue FROM sales_invoices WHERE status NOT IN ('Batal', 'Cancel', 'Dibatalkan')");
-      revenue = parseFloat(revenueResult.rows[0]?.revenue || 0);
+      const todayWITA = getTodayWITA();
+      const monthStart = todayWITA.slice(0, 7) + '-01';
+      const [lastDayRes] = await mysqlPool.query('SELECT LAST_DAY(?) AS month_end', [monthStart]);
+      const monthEnd = formatDateStr(lastDayRes[0]?.month_end) || todayWITA;
+
+      // Revenue (omzet bulan ini, basis DPP bersih setelah diskon & retur)
+      const invMonthRes = await pool.query(`
+        SELECT
+          COALESCE(SUM(si.subtotal), 0) AS kotor,
+          COALESCE(SUM(COALESCE(si.discount, 0)), 0) AS diskon
+        FROM sales_invoices si
+        WHERE si.date >= ? AND si.date < DATE_ADD(?, INTERVAL 1 DAY)
+          AND LOWER(COALESCE(si.status, '')) NOT IN ('batal', 'dibatalkan', 'cancel')
+      `, [monthStart, monthEnd]);
+      const invKotor = parseFloat(invMonthRes.rows[0]?.kotor || 0);
+      const invDiskon = parseFloat(invMonthRes.rows[0]?.diskon || 0);
+
+      const retMonthRes = await pool.query(`
+        SELECT
+          COALESCE(SUM(sri.subtotal * (1 - CASE WHEN si.subtotal > 0 THEN LEAST(1, GREATEST(0, COALESCE(si.discount, 0) / si.subtotal)) ELSE 0 END)), 0) AS retur_nilai,
+          COALESCE(SUM(CASE WHEN sri.condition_type = 'kembali_ke_stok' THEN sri.quantity * COALESCE(NULLIF(sri.cost_price_snapshot, 0), 0) ELSE 0 END), 0) AS hpp_retur_kembali
+        FROM sales_return_items sri
+        JOIN sales_returns sr ON sr.id = sri.return_id
+        JOIN sales_invoices si ON si.id = sr.invoice_id
+        WHERE sr.date >= ? AND sr.date < DATE_ADD(?, INTERVAL 1 DAY)
+          AND LOWER(COALESCE(si.status, '')) NOT IN ('batal', 'dibatalkan', 'cancel')
+      `, [monthStart, monthEnd]);
+      const retNilai = parseFloat(retMonthRes.rows[0]?.retur_nilai || 0);
+      const hppReturKembali = parseFloat(retMonthRes.rows[0]?.hpp_retur_kembali || 0);
+
+      revenue = invKotor - invDiskon - retNilai;
 
       // Piutang - invoice yang belum lunas
-      const receivablesResult = await pool.query("SELECT SUM(total - paid_amount - COALESCE(return_amount, 0)) as receivables FROM sales_invoices WHERE status NOT IN ('Lunas', 'Batal', 'Cancel', 'Dibatalkan')");
+      const receivablesResult = await pool.query("SELECT SUM(total - paid_amount - COALESCE(return_amount, 0)) as receivables FROM sales_invoices WHERE LOWER(COALESCE(status, '')) NOT IN ('lunas', 'batal', 'cancel', 'dibatalkan')");
       receivables = parseFloat(receivablesResult.rows[0]?.receivables || 0);
 
-      // Laba Kotor (Revenue - HPP)
+      // Laba Kotor bulan ini (Penjualan Bersih DPP - HPP snapshot - retur kembali ke stok)
       const hppResult = await pool.query(`
-        SELECT COALESCE(SUM(ii.quantity * p.cost_price), 0) as hpp
+        SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.hpp_satuan, 0), ii.cost_price_snapshot, 0)), 0) as hpp
         FROM invoice_items ii
-        JOIN products p ON ii.product_id = p.id
         JOIN sales_invoices si ON ii.invoice_id = si.id
-        WHERE si.status NOT IN ('Batal', 'Cancel', 'Dibatalkan')
-      `);
-      const hpp = parseFloat(hppResult.rows[0]?.hpp || 0);
+        WHERE si.date >= ? AND si.date < DATE_ADD(?, INTERVAL 1 DAY)
+          AND LOWER(COALESCE(si.status, '')) NOT IN ('batal', 'cancel', 'dibatalkan')
+      `, [monthStart, monthEnd]);
+      const hpp = parseFloat(hppResult.rows[0]?.hpp || 0) - hppReturKembali;
       grossProfit = revenue - hpp;
 
       // Jumlah invoice belum lunas (untuk badge piutang)
-      const unpaidCountResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE status NOT IN ('Lunas', 'Batal', 'Cancel', 'Dibatalkan')");
+      const unpaidCountResult = await pool.query("SELECT COUNT(*) as count FROM sales_invoices WHERE LOWER(COALESCE(status, '')) NOT IN ('lunas', 'batal', 'cancel', 'dibatalkan')");
       unpaidCount = parseInt(unpaidCountResult.rows[0]?.count || 0);
     }
 
@@ -2220,9 +2346,8 @@ app.get('/api/pricelists/effective-prices', authenticateToken, authorizeRoles('a
     const { customer_id } = req.query;
     const prices = await getEffectivePrices(customer_id);
 
-    // Sanitasi respons: sembunyikan HPP untuk role kasir jika tidak berhak
-    const userRole = (req.user?.role || '').toLowerCase();
-    const canSeeHpp = userRole === 'admin' || userRole === 'owner' || userRole === 'gudang';
+    // Sanitasi respons: sembunyikan HPP untuk role kasir dan gudang
+    const canSeeHpp = !isHppRestricted(req);
     if (!canSeeHpp) {
       prices.forEach(p => {
         delete p.hpp;
@@ -2321,9 +2446,8 @@ app.get('/api/pricelists/:id', authenticateToken, authorizeRoles('admin', 'owner
       ORDER BY p.name ASC
     `, [id]);
 
-    // Sanitasi respons berbasis role (Spec 4.4)
-    const userRole = (req.user?.role || '').toLowerCase();
-    const canSeeHpp = userRole === 'admin' || userRole === 'owner' || userRole === 'gudang';
+    // Sanitasi respons berbasis role: sembunyikan HPP untuk kasir dan gudang
+    const canSeeHpp = !isHppRestricted(req);
     const items = itemsRes.rows.map(item => {
       const it = { ...item };
       if (!canSeeHpp) {
@@ -2687,6 +2811,7 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
 
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
+    const isAdminUser = (req.user?.role || '').toLowerCase() === 'admin';
     const todayStr = formatDateStr(new Date());
     const mapInvoiceRow = (r) => {
       const total = parseFloat(r.total || 0);
@@ -2695,7 +2820,7 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
       const sisa = Math.max(0, total - paid - returnAmount);
       const dueDateStr = formatDateStr(r.due_date);
       const isOverdue = sisa > 0 && Boolean(dueDateStr) && dueDateStr < todayStr;
-      return {
+      const base = {
         id: r.id,
         date: formatDateStr(r.date),
         customerId: r.customer_id,
@@ -2712,7 +2837,54 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
         dueDate: dueDateStr,
         isOutstandingImport: Boolean(r.is_outstanding_import)
       };
+      if (isAdminUser) {
+        const isCancelled = ['batal', 'dibatalkan', 'cancel'].includes(String(r.status || '').toLowerCase());
+        if (isCancelled) {
+          base.penjualanBersih = 0;
+          base.hpp = 0;
+          base.laba = null;
+          base.marginPct = null;
+          base.hppEstimasi = false;
+        } else {
+          const kotor = parseFloat(r.subtotal || 0);
+          const diskon = parseFloat(r.discount || 0);
+          const returDpp = parseFloat(r.retur_dpp || 0);
+          const penjBersih = kotor - diskon - returDpp;
+          const hppVal = parseFloat(r.hpp_jual || 0) - parseFloat(r.hpp_retur_kembali || 0);
+          const labaVal = penjBersih - hppVal;
+          base.penjualanBersih = penjBersih;
+          base.hpp = hppVal;
+          base.laba = labaVal;
+          base.marginPct = penjBersih > 0 ? (labaVal / penjBersih) * 100 : null;
+          base.hppEstimasi = Boolean(r.is_outstanding_import) || Boolean(Number(r.has_hpp_estimasi || 0));
+        }
+      }
+      return base;
     };
+
+    const adminProfitSelect = isAdminUser ? `,
+          COALESCE(ii_agg.hpp_jual, 0) AS hpp_jual,
+          COALESCE(ii_agg.has_hpp_estimasi, 0) AS has_hpp_estimasi,
+          COALESCE(ret_agg.retur_dpp, 0) AS retur_dpp,
+          COALESCE(ret_agg.hpp_retur_kembali, 0) AS hpp_retur_kembali` : '';
+
+    const adminProfitJoins = isAdminUser ? `
+        LEFT JOIN (
+          SELECT invoice_id,
+                 SUM(quantity * COALESCE(NULLIF(hpp_satuan, 0), cost_price_snapshot, 0)) AS hpp_jual,
+                 MAX(hpp_estimasi) AS has_hpp_estimasi
+          FROM invoice_items
+          GROUP BY invoice_id
+        ) ii_agg ON ii_agg.invoice_id = si.id
+        LEFT JOIN (
+          SELECT sr.invoice_id,
+                 SUM(sri.subtotal * (1 - CASE WHEN si2.subtotal > 0 THEN LEAST(1, GREATEST(0, COALESCE(si2.discount, 0) / si2.subtotal)) ELSE 0 END)) AS retur_dpp,
+                 SUM(CASE WHEN sri.condition_type = 'kembali_ke_stok' THEN sri.quantity * COALESCE(NULLIF(sri.cost_price_snapshot, 0), 0) ELSE 0 END) AS hpp_retur_kembali
+          FROM sales_return_items sri
+          JOIN sales_returns sr ON sr.id = sri.return_id
+          JOIN sales_invoices si2 ON si2.id = sr.invoice_id
+          GROUP BY sr.invoice_id
+        ) ret_agg ON ret_agg.invoice_id = si.id` : '';
 
     if (isPaginated) {
       const pageNum = Math.max(1, parseInt(page) || 1);
@@ -2729,10 +2901,11 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
       const total = parseInt(countRes.rows[0]?.total || 0);
 
       const dataSql = `
-        SELECT si.*, c.name as customer, pt.name as payment_type_name
+        SELECT si.*, c.name as customer, pt.name as payment_type_name${adminProfitSelect}
         FROM sales_invoices si
         LEFT JOIN customers c ON si.customer_id = c.id
         LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+        ${adminProfitJoins}
         ${whereClause}
         ORDER BY
           CASE
@@ -2768,10 +2941,11 @@ app.get('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir', 'fi
     }
 
     const result = await pool.query(`
-      SELECT si.*, c.name as customer, pt.name as payment_type_name
+      SELECT si.*, c.name as customer, pt.name as payment_type_name${adminProfitSelect}
       FROM sales_invoices si
       LEFT JOIN customers c ON si.customer_id = c.id
       LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
+      ${adminProfitJoins}
       ${whereClause}
       ORDER BY
         CASE
@@ -2806,11 +2980,15 @@ app.get('/api/invoices/:id/items', authenticateToken, authorizeRoles('admin', 'k
       LEFT JOIN products p ON p.id = ii.product_id
       WHERE ii.invoice_id = $1
     `, [req.params.id]);
-    // Security: strip fee fields from non-admin responses; strip HPP for restricted roles
+    // Security: strip fee fields from non-admin responses; strip HPP for restricted roles (kasir & gudang)
     const rows = result.rows.map(row => {
       let r = { ...row };
-      if (req.user.role !== 'admin') { const { customer_fee, fee_notes, ...rest } = r; r = rest; }
-      if (isHppRestricted(req)) { delete r.cost_price_snapshot; }
+      if ((req.user?.role || '').toLowerCase() !== 'admin') { const { customer_fee, fee_notes, ...rest } = r; r = rest; }
+      if (isHppRestricted(req)) {
+        delete r.cost_price_snapshot;
+        delete r.hpp_satuan;
+        delete r.hpp_estimasi;
+      }
       return r;
     });
     res.json(rows);
@@ -2822,7 +3000,7 @@ app.get('/api/invoices/:id/items', authenticateToken, authorizeRoles('admin', 'k
 app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const invRes = await pool.query(`
       SELECT si.*, c.name as customer_name, c.address as customer_address,
              c.phone as customer_phone, c.no_hp_2 as customer_no_hp_2,
@@ -2832,13 +3010,13 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
       LEFT JOIN payment_types pt ON si.payment_type_id = pt.id
       WHERE si.id = $1
     `, [id]);
-    
+
     if (invRes.rows.length === 0) {
       return res.status(404).json({ error: 'Invoice tidak ditemukan' });
     }
-    
+
     const invoiceRow = invRes.rows[0];
-    
+
     const itemsRes = await pool.query(`
       SELECT ii.*, p.name as product_name, pu.name as unit_name
       FROM invoice_items ii
@@ -2846,7 +3024,7 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
       LEFT JOIN product_units pu ON p.unit_id = pu.id
       WHERE ii.invoice_id = $1
     `, [id]);
-    
+
     const settingsRes = await pool.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('company_name', 'company_phone', 'company_email', 'company_address', 'company_logo', 'ppn_enabled', 'pajak_default')`);
     const company = {};
     const settingsMap = {};
@@ -2862,10 +3040,10 @@ app.get('/api/invoices/:id/print-data', authenticateToken, async (req, res) => {
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
     const subtotal = parseFloat(invoiceRow.subtotal || 0);
     const diskon = parseFloat(invoiceRow.discount || 0);
-    
+
     const recalculatedTax = ppnEnabled ? Math.round((subtotal - diskon) * (pajakDefault / 100)) : 0;
     const recalculatedTotal = subtotal - diskon + recalculatedTax;
-    
+
     const phone1 = invoiceRow.customer_phone ? String(invoiceRow.customer_phone).trim() : '';
     const phone2 = invoiceRow.customer_no_hp_2 ? String(invoiceRow.customer_no_hp_2).trim() : '';
     const chosenPhone = (phone1 && phone1 !== '-') ? phone1 : ((phone2 && phone2 !== '-') ? phone2 : (phone1 || '-'));
@@ -2908,7 +3086,14 @@ app.get('/api/purchases/:id/items', authenticateToken, authorizeRoles('admin', '
       LEFT JOIN products p ON p.id = poi.product_id
       WHERE poi.purchase_order_id = $1
     `, [req.params.id]);
-    res.json(result.rows);
+    const restricted = isHppRestricted(req);
+    const rows = result.rows.map(row => {
+      if (!restricted) return row;
+      const r = { ...row };
+      delete r.cost_price; // Gudang tetap melihat poi.cost (harga beli PO), bukan HPP rata-rata produk
+      return r;
+    });
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2937,7 +3122,8 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
 
   console.log(`[Invoice Creation API] Selected Payment Type ID: "${payment_type_id}"`);
 
-  const insertInvoiceQuery = 'INSERT INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, payment_type_id, due_date, paid_date, status, user_id, is_outstanding_import) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0)';
+  const isImportInvoice = Boolean(req.body.is_import);
+  const insertInvoiceQuery = 'INSERT INTO sales_invoices (id, date, customer_id, subtotal, discount, tax, total, paid_amount, payment_type_id, due_date, paid_date, status, user_id, is_outstanding_import) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)';
   const updateStockQuery = 'UPDATE products SET stock = stock - $1 WHERE id = $2';
 
   const client = await pool.connect();
@@ -2948,20 +3134,22 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
-    if (items && Array.isArray(items)) {
+    if (items && Array.isArray(items) && items.length > 0) {
       items.forEach(item => {
         const itemQty = parseFloat(item.quantity ?? item.qty ?? 0);
         const itemPrice = parseFloat(item.price ?? item.sell_price ?? 0);
         subtotal += itemPrice * itemQty;
       });
+    } else if (isImportInvoice) {
+      subtotal = parseFloat(total || 0);
     }
     const diskon = parseFloat(req.body.discount || req.body.diskon || 0);
-    const taxAmount = ppnEnabled ? Math.round((subtotal - diskon) * (pajakDefault / 100)) : 0;
+    const taxAmount = (isImportInvoice && (!items || items.length === 0)) ? 0 : (ppnEnabled ? Math.round((subtotal - diskon) * (pajakDefault / 100)) : 0);
     const finalTotal = subtotal - diskon + taxAmount;
 
     const todayWITA = getTodayWITA();
@@ -2980,7 +3168,7 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
     // Use date from request body so year/month match the invoice date (not server clock)
     const invoiceDateForId = req.body.date ? req.body.date.split('T')[0] : todayWITA;
     const id = await generateInvoiceId(client, invoiceDateForId);
-    
+
     console.log(`[Invoice Creation API] Saving invoice ${id} with payment_type_id: "${payment_type_id}"`);
     // Ensure due_date is calculated if Kredit and due_date not passed
     let finalDueDate = due_date || null;
@@ -3001,7 +3189,7 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
       }
     }
 
-    await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, finalDueDate, paidDate, status, userId]);
+    await client.query(insertInvoiceQuery, [id, date, customer_id, subtotal, diskon, taxAmount, finalTotal, effectivePaid, payment_type_id, finalDueDate, paidDate, status, userId, isImportInvoice ? 1 : 0]);
 
     // Reduce stock & insert items with HPP snapshot
     if (items && Array.isArray(items)) {
@@ -3020,13 +3208,18 @@ app.post('/api/invoices', authenticateToken, authorizeRoles('admin', 'kasir'), a
         const itemFeeNotes = req.user.role === 'admin' ? (item.fee_notes || null) : null;
         if (itemFee < 0) throw new Error('customer_fee tidak boleh negatif');
 
-        // Snapshot the HPP (cost_price) at time of sale to prevent drift when cost changes later
+        // Snapshot HPP (cost_price) saat invoice dibuat
         const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [prodId]);
-        const costSnapshot = parseFloat(costRes.rows[0]?.cost_price || item.cost_price || 0);
+        const rawProdCost = costRes.rows.length > 0 ? costRes.rows[0].cost_price : null;
+        const costSnapshot = (rawProdCost !== null && rawProdCost !== undefined)
+          ? (parseFloat(rawProdCost) || 0)
+          : (parseFloat(item.cost_price) || 0);
+        const hppSatuan = Math.round(costSnapshot * 100) / 100;
+        const hppEstimasi = isImportInvoice ? 1 : 0;
 
         await client.query(
-          'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [Date.now().toString() + Math.floor(Math.random() * 1000), id, prodId, itemQty, itemPrice, costSnapshot, itemFee, itemFeeNotes]
+          'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, hpp_satuan, hpp_estimasi, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [Date.now().toString() + Math.floor(Math.random() * 1000), id, prodId, itemQty, itemPrice, costSnapshot, hppSatuan, hppEstimasi, itemFee, itemFeeNotes]
         );
 
         await recordStockMove(client, {
@@ -4280,6 +4473,26 @@ pool.query(`ALTER TABLE cash_transactions ADD COLUMN IF NOT EXISTS status VARCHA
     console.log('[Migration] purchase_orders: subtotal, discount, tax columns ensured');
     console.log('[Migration] invoice_items: cost_price_snapshot column ensured');
 
+    // Ensure hpp_satuan & hpp_estimasi columns on invoice_items + indexes on sales_invoices
+    const [hppSatCols] = await mysqlPool.query("SHOW COLUMNS FROM invoice_items LIKE 'hpp_satuan'");
+    if (!hppSatCols || hppSatCols.length === 0) {
+      await mysqlPool.query("ALTER TABLE invoice_items ADD COLUMN hpp_satuan DECIMAL(18,2) NOT NULL DEFAULT 0 AFTER cost_price_snapshot");
+    }
+    const [hppEstCols] = await mysqlPool.query("SHOW COLUMNS FROM invoice_items LIKE 'hpp_estimasi'");
+    if (!hppEstCols || hppEstCols.length === 0) {
+      await mysqlPool.query("ALTER TABLE invoice_items ADD COLUMN hpp_estimasi TINYINT(1) NOT NULL DEFAULT 0 AFTER hpp_satuan");
+      await mysqlPool.query("UPDATE invoice_items SET hpp_satuan = ROUND(COALESCE(cost_price_snapshot, 0), 2), hpp_estimasi = CASE WHEN COALESCE(cost_price_snapshot, 0) > 0 THEN 0 ELSE 1 END");
+    }
+    const [idxSiDs] = await mysqlPool.query("SHOW INDEX FROM sales_invoices WHERE Key_name = 'idx_si_date_status'");
+    if (!idxSiDs || idxSiDs.length === 0) {
+      await mysqlPool.query("ALTER TABLE sales_invoices ADD INDEX idx_si_date_status (date, status)");
+    }
+    const [idxSiSt] = await mysqlPool.query("SHOW INDEX FROM sales_invoices WHERE Key_name = 'idx_si_status'");
+    if (!idxSiSt || idxSiSt.length === 0) {
+      await mysqlPool.query("ALTER TABLE sales_invoices ADD INDEX idx_si_status (status)");
+    }
+    console.log('[Migration] invoice_items hpp_satuan/hpp_estimasi & sales_invoices indexes ensured');
+
     // Add paid_date to invoices and purchases
     await pool.query(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS paid_date DATE DEFAULT NULL`);
     await pool.query(`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS is_outstanding_import TINYINT(1) NOT NULL DEFAULT 0`);
@@ -4670,6 +4883,666 @@ app.patch('/api/finance/cash-flow/:id/cancel', authenticateToken, authorizeRoles
   }
 });
 
+// --- Shared Sales & Profit Report Helpers (Basis DPP, Exclude Cancel, Snapshot HPP + Retur) ---
+const ACTIVE_INV_STATUS_PREDICATE = "LOWER(COALESCE(si.status, '')) NOT IN ('batal', 'dibatalkan', 'cancel')";
+const ITEM_HPP_EXPR = "COALESCE(NULLIF(ii.hpp_satuan, 0), ii.cost_price_snapshot, 0)";
+const RET_ITEM_HPP_EXPR = "COALESCE(NULLIF(sri.cost_price_snapshot, 0), 0)";
+const RET_DPP_ITEM_EXPR = "sri.subtotal * (1 - CASE WHEN si.subtotal > 0 THEN LEAST(1, GREATEST(0, COALESCE(si.discount, 0) / si.subtotal)) ELSE 0 END)";
+
+function parseReportDateStr(str) {
+  const s = String(str || '').split('T')[0].trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== (m - 1) || dt.getUTCDate() !== d) return null;
+  return s;
+}
+
+function validateSalesReportParams({ from, to, group = 'invoice' }) {
+  const allowedGroups = ['day', 'month', 'invoice'];
+  if (!allowedGroups.includes(group)) {
+    throw Object.assign(new Error(`Parameter group tidak valid: '${group}'. Gunakan day, month, atau invoice.`), { status: 400 });
+  }
+  const cleanFrom = parseReportDateStr(from);
+  const cleanTo = parseReportDateStr(to);
+  if (!cleanFrom || !cleanTo) {
+    throw Object.assign(new Error('Parameter from dan to wajib berformat YYYY-MM-DD dan merupakan tanggal kalender valid.'), { status: 400 });
+  }
+  if (cleanFrom > cleanTo) {
+    throw Object.assign(new Error('Tanggal "Dari" tidak boleh lebih besar dari tanggal "Sampai".'), { status: 400 });
+  }
+  const [fy, fm, fd] = cleanFrom.split('-').map(Number);
+  const [ty, tm, td] = cleanTo.split('-').map(Number);
+  const fromUtc = Date.UTC(fy, fm - 1, fd);
+  const toUtc = Date.UTC(ty, tm - 1, td);
+  const diffDays = Math.round((toUtc - fromUtc) / 86400000) + 1;
+  const monthSpan = (ty - fy) * 12 + (tm - fm) + 1;
+
+  if (group === 'day' && diffDays > 366) {
+    throw Object.assign(new Error(`Rentang tanggal untuk pengelompokan Per Hari maksimal 366 hari (dipilih: ${diffDays} hari).`), { status: 400 });
+  }
+  if (group === 'month' && monthSpan > 60) {
+    throw Object.assign(new Error(`Rentang tanggal untuk pengelompokan Per Bulan maksimal 60 bulan (dipilih: ${monthSpan} bulan).`), { status: 400 });
+  }
+  return { from: cleanFrom, to: cleanTo, group, diffDays, monthSpan };
+}
+
+function buildSalesReportFilterSql({ customer_id, payment_type_id, status }) {
+  const conds = [ACTIVE_INV_STATUS_PREDICATE];
+  const params = [];
+  if (customer_id && customer_id !== 'all') {
+    conds.push('si.customer_id = ?');
+    params.push(customer_id);
+  }
+  if (payment_type_id && payment_type_id !== 'all') {
+    conds.push('si.payment_type_id = ?');
+    params.push(payment_type_id);
+  }
+  if (status && status !== 'all') {
+    const st = String(status).trim().toLowerCase();
+    if (st === 'belum' || st === 'belum lunas / belum bayar') {
+      conds.push("LOWER(si.status) LIKE '%belum%'");
+    } else {
+      conds.push('LOWER(si.status) = ?');
+      params.push(st);
+    }
+  }
+  return { conds, params };
+}
+
+function countSalesDivisorDays(fromStr, toStr) {
+  const todayWITA = getTodayWITA();
+  const effectiveTo = toStr > todayWITA ? todayWITA : toStr;
+  if (effectiveTo < fromStr) return 0;
+  const [fy, fm, fd] = fromStr.split('-').map(Number);
+  const [ey, em, ed] = effectiveTo.split('-').map(Number);
+  const fromUtc = Date.UTC(fy, fm - 1, fd);
+  const effUtc = Date.UTC(ey, em - 1, ed);
+  return Math.max(1, Math.round((effUtc - fromUtc) / 86400000) + 1);
+}
+
+async function computeSalesSummary(clientOrPool, { from, to, customer_id, payment_type_id, status }) {
+  const { conds, params } = buildSalesReportFilterSql({ customer_id, payment_type_id, status });
+  const invWhere = ['si.date >= ?', 'si.date < DATE_ADD(?, INTERVAL 1 DAY)', ...conds].join(' AND ');
+  const invParams = [from, to, ...params];
+
+  const [invHeaderRes, invHppRes, retRes] = await Promise.all([
+    clientOrPool.query(`
+      SELECT
+        COUNT(*) AS jumlah_invoice,
+        COALESCE(SUM(si.subtotal), 0) AS penjualan_kotor,
+        COALESCE(SUM(COALESCE(si.discount, 0)), 0) AS diskon
+      FROM sales_invoices si
+      WHERE ${invWhere}
+    `, invParams),
+    clientOrPool.query(`
+      SELECT COALESCE(SUM(ii.quantity * ${ITEM_HPP_EXPR}), 0) AS hpp_jual
+      FROM invoice_items ii
+      JOIN sales_invoices si ON si.id = ii.invoice_id
+      WHERE ${invWhere}
+    `, invParams),
+    clientOrPool.query(`
+      SELECT
+        COALESCE(SUM(${RET_DPP_ITEM_EXPR}), 0) AS retur_nilai,
+        COALESCE(SUM(CASE WHEN sri.condition_type = 'kembali_ke_stok' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END), 0) AS hpp_retur_kembali,
+        COALESCE(SUM(CASE WHEN sri.condition_type = 'rusak' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END), 0) AS hpp_retur_rusak
+      FROM sales_return_items sri
+      JOIN sales_returns sr ON sr.id = sri.return_id
+      JOIN sales_invoices si ON si.id = sr.invoice_id
+      WHERE sr.date >= ? AND sr.date < DATE_ADD(?, INTERVAL 1 DAY)
+        AND ${conds.join(' AND ')}
+    `, [from, to, ...params])
+  ]);
+
+  const jumlahInvoice = parseInt(invHeaderRes.rows[0]?.jumlah_invoice || 0, 10);
+  const penjualanKotor = parseFloat(invHeaderRes.rows[0]?.penjualan_kotor || 0);
+  const diskon = parseFloat(invHeaderRes.rows[0]?.diskon || 0);
+  const retur = parseFloat(retRes.rows[0]?.retur_nilai || 0);
+  const penjualanBersih = penjualanKotor - diskon - retur;
+
+  const hppJual = parseFloat(invHppRes.rows[0]?.hpp_jual || 0);
+  const hppReturKembali = parseFloat(retRes.rows[0]?.hpp_retur_kembali || 0);
+  const hppReturRusak = parseFloat(retRes.rows[0]?.hpp_retur_rusak || 0);
+  const hpp = hppJual - hppReturKembali;
+
+  const labaKotor = penjualanBersih - hpp;
+  const marginPct = Math.abs(penjualanBersih) > 0.0001 ? (labaKotor / penjualanBersih) * 100 : null;
+  const rataNilaiInvoice = jumlahInvoice > 0 ? penjualanBersih / jumlahInvoice : 0;
+  const hariPembagi = countSalesDivisorDays(from, to);
+  const rataPenjualanHari = hariPembagi > 0 ? penjualanBersih / hariPembagi : 0;
+
+  return {
+    penjualan_kotor: penjualanKotor,
+    diskon,
+    retur,
+    penjualan_bersih: penjualanBersih,
+    hpp,
+    hpp_jual: hppJual,
+    hpp_retur_kembali: hppReturKembali,
+    hpp_retur_rusak: hppReturRusak,
+    laba_kotor: labaKotor,
+    margin_pct: marginPct,
+    jumlah_invoice: jumlahInvoice,
+    rata_nilai_invoice: rataNilaiInvoice,
+    rata_penjualan_hari: rataPenjualanHari,
+    hari_pembagi: hariPembagi
+  };
+}
+
+async function computeGroupedSalesReport(clientOrPool, { group, from, to, customer_id, payment_type_id, status, page = 1, limit = 80, all = false }) {
+  const { conds, params } = buildSalesReportFilterSql({ customer_id, payment_type_id, status });
+  const invWhere = ['si.date >= ?', 'si.date < DATE_ADD(?, INTERVAL 1 DAY)', ...conds].join(' AND ');
+  const invParams = [from, to, ...params];
+  const retWhere = ['sr.date >= ?', 'sr.date < DATE_ADD(?, INTERVAL 1 DAY)', ...conds].join(' AND ');
+  const retParams = [from, to, ...params];
+
+  if (group === 'day' || group === 'month') {
+    const invKeyExpr = group === 'day' ? "DATE_FORMAT(si.date, '%Y-%m-%d')" : "DATE_FORMAT(si.date, '%Y-%m')";
+    const retKeyExpr = group === 'day' ? "DATE_FORMAT(sr.date, '%Y-%m-%d')" : "DATE_FORMAT(sr.date, '%Y-%m')";
+
+    const [invGrpRes, hppGrpRes, retGrpRes] = await Promise.all([
+      clientOrPool.query(`
+        SELECT
+          ${invKeyExpr} AS period_key,
+          COUNT(*) AS jml_invoice,
+          COALESCE(SUM(si.subtotal), 0) AS penjualan_kotor,
+          COALESCE(SUM(COALESCE(si.discount, 0)), 0) AS diskon
+        FROM sales_invoices si
+        WHERE ${invWhere}
+        GROUP BY ${invKeyExpr}
+        ORDER BY period_key ASC
+      `, invParams),
+      clientOrPool.query(`
+        SELECT
+          ${invKeyExpr} AS period_key,
+          COALESCE(SUM(ii.quantity * ${ITEM_HPP_EXPR}), 0) AS hpp_jual
+        FROM invoice_items ii
+        JOIN sales_invoices si ON si.id = ii.invoice_id
+        WHERE ${invWhere}
+        GROUP BY ${invKeyExpr}
+      `, invParams),
+      clientOrPool.query(`
+        SELECT
+          ${retKeyExpr} AS period_key,
+          COALESCE(SUM(${RET_DPP_ITEM_EXPR}), 0) AS retur_nilai,
+          COALESCE(SUM(CASE WHEN sri.condition_type = 'kembali_ke_stok' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END), 0) AS hpp_retur_kembali,
+          COALESCE(SUM(CASE WHEN sri.condition_type = 'rusak' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END), 0) AS hpp_retur_rusak
+        FROM sales_return_items sri
+        JOIN sales_returns sr ON sr.id = sri.return_id
+        JOIN sales_invoices si ON si.id = sr.invoice_id
+        WHERE ${retWhere}
+        GROUP BY ${retKeyExpr}
+      `, retParams)
+    ]);
+
+    const periodMap = new Map();
+    const ensureBucket = (key) => {
+      if (!periodMap.has(key)) {
+        periodMap.set(key, {
+          period: key,
+          jml_invoice: 0,
+          penjualan_kotor: 0,
+          diskon: 0,
+          retur: 0,
+          hpp_jual: 0,
+          hpp_retur_kembali: 0,
+          hpp_retur_rusak: 0
+        });
+      }
+      return periodMap.get(key);
+    };
+
+    for (const r of invGrpRes.rows) {
+      const b = ensureBucket(r.period_key);
+      b.jml_invoice = parseInt(r.jml_invoice || 0, 10);
+      b.penjualan_kotor = parseFloat(r.penjualan_kotor || 0);
+      b.diskon = parseFloat(r.diskon || 0);
+    }
+    for (const r of hppGrpRes.rows) {
+      const b = ensureBucket(r.period_key);
+      b.hpp_jual = parseFloat(r.hpp_jual || 0);
+    }
+    for (const r of retGrpRes.rows) {
+      const b = ensureBucket(r.period_key);
+      b.retur = parseFloat(r.retur_nilai || 0);
+      b.hpp_retur_kembali = parseFloat(r.hpp_retur_kembali || 0);
+      b.hpp_retur_rusak = parseFloat(r.hpp_retur_rusak || 0);
+    }
+
+    const sortedKeys = Array.from(periodMap.keys()).sort();
+    const rows = sortedKeys.map(key => {
+      const b = periodMap.get(key);
+      const penjualanBersih = b.penjualan_kotor - b.diskon - b.retur;
+      const hpp = b.hpp_jual - b.hpp_retur_kembali;
+      const labaKotor = penjualanBersih - hpp;
+      const marginPct = Math.abs(penjualanBersih) > 0.0001 ? (labaKotor / penjualanBersih) * 100 : null;
+      let isPartial = false;
+      if (group === 'month') {
+        const [yy, mm] = key.split('-').map(Number);
+        const monthStart = `${yy}-${String(mm).padStart(2, '0')}-01`;
+        const lastDay = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+        const monthEnd = `${yy}-${String(mm).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        isPartial = (from > monthStart) || (to < monthEnd);
+      }
+      return {
+        period: key,
+        is_partial: isPartial,
+        jml_invoice: b.jml_invoice,
+        penjualan_kotor: b.penjualan_kotor,
+        diskon: b.diskon,
+        retur: b.retur,
+        penjualan_bersih: penjualanBersih,
+        hpp,
+        hpp_retur_rusak: b.hpp_retur_rusak,
+        laba_kotor: labaKotor,
+        margin_pct: marginPct
+      };
+    });
+
+    const totals = rows.reduce((acc, r) => {
+      acc.jml_invoice += r.jml_invoice;
+      acc.penjualan_kotor += r.penjualan_kotor;
+      acc.diskon += r.diskon;
+      acc.retur += r.retur;
+      acc.penjualan_bersih += r.penjualan_bersih;
+      acc.hpp += r.hpp;
+      acc.hpp_retur_rusak += r.hpp_retur_rusak;
+      acc.laba_kotor += r.laba_kotor;
+      return acc;
+    }, {
+      jml_invoice: 0,
+      penjualan_kotor: 0,
+      diskon: 0,
+      retur: 0,
+      penjualan_bersih: 0,
+      hpp: 0,
+      hpp_retur_rusak: 0,
+      laba_kotor: 0
+    });
+    totals.margin_pct = Math.abs(totals.penjualan_bersih) > 0.0001
+      ? (totals.laba_kotor / totals.penjualan_bersih) * 100
+      : null;
+
+    return { group, rows, totals, pagination: null };
+  }
+
+  // group === 'invoice'
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(80, Math.max(1, parseInt(limit, 10) || 80));
+  const offset = (pageNum - 1) * limitNum;
+
+  const countRes = await clientOrPool.query(`
+    SELECT COUNT(*) AS total
+    FROM sales_invoices si
+    WHERE ${invWhere}
+  `, invParams);
+  const total = parseInt(countRes.rows[0]?.total || 0, 10);
+
+  const limitClause = all ? '' : 'LIMIT ? OFFSET ?';
+  const queryParams = all ? [...invParams] : [...invParams, limitNum, offset];
+
+  const dataRes = await clientOrPool.query(`
+    SELECT
+      si.id,
+      si.date,
+      si.customer_id,
+      COALESCE(c.name, 'Tanpa Pelanggan') AS customer_name,
+      si.payment_type_id,
+      COALESCE(pt.name, 'Tunai') AS payment_type_name,
+      si.status,
+      si.is_outstanding_import,
+      COALESCE(si.subtotal, 0) AS penjualan_kotor,
+      COALESCE(si.discount, 0) AS diskon,
+      COALESCE(ii_agg.hpp_jual, 0) AS hpp_jual,
+      COALESCE(ii_agg.has_hpp_estimasi, 0) AS has_hpp_estimasi,
+      COALESCE(ret_agg.retur_nilai, 0) AS retur_nilai,
+      COALESCE(ret_agg.hpp_retur_kembali, 0) AS hpp_retur_kembali,
+      COALESCE(ret_agg.hpp_retur_rusak, 0) AS hpp_retur_rusak
+    FROM sales_invoices si
+    LEFT JOIN customers c ON c.id = si.customer_id
+    LEFT JOIN payment_types pt ON pt.id = si.payment_type_id
+    LEFT JOIN (
+      SELECT
+        ii.invoice_id,
+        SUM(ii.quantity * ${ITEM_HPP_EXPR}) AS hpp_jual,
+        MAX(ii.hpp_estimasi) AS has_hpp_estimasi
+      FROM invoice_items ii
+      GROUP BY ii.invoice_id
+    ) ii_agg ON ii_agg.invoice_id = si.id
+    LEFT JOIN (
+      SELECT
+        sr.invoice_id,
+        SUM(sri.subtotal * (1 - CASE WHEN si_ret.subtotal > 0 THEN LEAST(1, GREATEST(0, COALESCE(si_ret.discount, 0) / si_ret.subtotal)) ELSE 0 END)) AS retur_nilai,
+        SUM(CASE WHEN sri.condition_type = 'kembali_ke_stok' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END) AS hpp_retur_kembali,
+        SUM(CASE WHEN sri.condition_type = 'rusak' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END) AS hpp_retur_rusak
+      FROM sales_return_items sri
+      JOIN sales_returns sr ON sr.id = sri.return_id
+      JOIN sales_invoices si_ret ON si_ret.id = sr.invoice_id
+      -- Per Invoice: tampilkan semua retur untuk invoice itu, tanpa filter tanggal retur
+      GROUP BY sr.invoice_id
+    ) ret_agg ON ret_agg.invoice_id = si.id
+    WHERE ${invWhere}
+    ORDER BY
+      CASE
+        WHEN si.id REGEXP '^INV[-/][0-9]{4}' THEN 3
+        WHEN si.id REGEXP '^PIUTANG-[0-9]+' THEN 2
+        WHEN si.id REGEXP '^[0-9]+$' THEN 1
+        ELSE 0
+      END DESC,
+      CASE
+        WHEN si.id REGEXP '^INV[-/][0-9]{4}' THEN CAST(SUBSTRING(si.id, 5, 4) AS UNSIGNED)
+        ELSE 0
+      END DESC,
+      CASE
+        WHEN si.id REGEXP '^INV[-/][0-9]{4}' THEN CAST(SUBSTRING_INDEX(si.id, '-', -1) AS UNSIGNED)
+        WHEN si.id REGEXP '^PIUTANG-[0-9]+' THEN CAST(SUBSTRING_INDEX(si.id, '-', -1) AS UNSIGNED)
+        WHEN si.id REGEXP '^[0-9]+$' THEN CAST(si.id AS UNSIGNED)
+        ELSE 0
+      END DESC,
+      si.id DESC
+    ${limitClause}
+  `, queryParams);
+
+  const rows = dataRes.rows.map(r => {
+    const penjualanKotor = parseFloat(r.penjualan_kotor || 0);
+    const diskon = parseFloat(r.diskon || 0);
+    const retur = parseFloat(r.retur_nilai || 0);
+    const penjualanBersih = penjualanKotor - diskon - retur;
+    const hpp = parseFloat(r.hpp_jual || 0) - parseFloat(r.hpp_retur_kembali || 0);
+    const laba = penjualanBersih - hpp;
+    const marginPct = Math.abs(penjualanBersih) > 0.0001 ? (laba / penjualanBersih) * 100 : null;
+    const hppEstimasi = Boolean(r.is_outstanding_import) || Boolean(Number(r.has_hpp_estimasi || 0));
+    return {
+      id: r.id,
+      date: formatDateStr(r.date),
+      customer_id: r.customer_id,
+      customer_name: r.customer_name,
+      payment_type_id: r.payment_type_id,
+      payment_type_name: r.payment_type_name,
+      status: r.status,
+      penjualan_kotor: penjualanKotor,
+      diskon,
+      retur,
+      penjualan_bersih: penjualanBersih,
+      hpp,
+      hpp_retur_rusak: parseFloat(r.hpp_retur_rusak || 0),
+      laba,
+      margin_pct: marginPct,
+      hpp_estimasi: hppEstimasi
+    };
+  });
+
+  // Ringkasan total untuk seluruh dataset sesuai filter (konsisten dengan kartu ringkasan)
+  const summaryTotals = await computeSalesSummary(clientOrPool, { from, to, customer_id, payment_type_id, status });
+
+  return {
+    group: 'invoice',
+    rows,
+    totals: {
+      jml_invoice: summaryTotals.jumlah_invoice,
+      penjualan_kotor: summaryTotals.penjualan_kotor,
+      diskon: summaryTotals.diskon,
+      retur: summaryTotals.retur,
+      penjualan_bersih: summaryTotals.penjualan_bersih,
+      hpp: summaryTotals.hpp,
+      hpp_retur_rusak: summaryTotals.hpp_retur_rusak,
+      laba_kotor: summaryTotals.laba_kotor,
+      margin_pct: summaryTotals.margin_pct
+    },
+    pagination: all ? null : {
+      page: pageNum,
+      limit: limitNum,
+      total,
+      totalPages: Math.ceil(total / limitNum) || 1
+    }
+  };
+}
+
+// --- Laporan Penjualan Endpoints (Admin Only) ---
+app.get('/api/laporan/penjualan/ringkasan', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { from, to } = validateSalesReportParams({
+      from: req.query.from,
+      to: req.query.to,
+      group: 'invoice'
+    });
+    const summary = await computeSalesSummary(pool, {
+      from,
+      to,
+      customer_id: req.query.customer_id,
+      payment_type_id: req.query.payment_type_id,
+      status: req.query.status
+    });
+    res.json({ success: true, data: { from, to, ...summary } });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/laporan/penjualan', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const group = req.query.group || 'day';
+    const validated = validateSalesReportParams({
+      from: req.query.from,
+      to: req.query.to,
+      group
+    });
+    const allFlag = req.query.all === '1' || req.query.all === 'true';
+    const result = await computeGroupedSalesReport(pool, {
+      group: validated.group,
+      from: validated.from,
+      to: validated.to,
+      customer_id: req.query.customer_id,
+      payment_type_id: req.query.payment_type_id,
+      status: req.query.status,
+      page: req.query.page,
+      limit: req.query.limit || 80,
+      all: allFlag
+    });
+    res.json({
+      success: true,
+      data: {
+        from: validated.from,
+        to: validated.to,
+        ...result
+      }
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/laporan/penjualan/export-pdf', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const group = req.query.group || 'day';
+    const validated = validateSalesReportParams({
+      from: req.query.from,
+      to: req.query.to,
+      group
+    });
+    const result = await computeGroupedSalesReport(pool, {
+      group: validated.group,
+      from: validated.from,
+      to: validated.to,
+      customer_id: req.query.customer_id,
+      payment_type_id: req.query.payment_type_id,
+      status: req.query.status,
+      all: true
+    });
+    const summary = await computeSalesSummary(pool, {
+      from: validated.from,
+      to: validated.to,
+      customer_id: req.query.customer_id,
+      payment_type_id: req.query.payment_type_id,
+      status: req.query.status
+    });
+
+    const companyRes = await pool.query("SELECT value FROM settings WHERE `key` = 'company_name'");
+    const companyName = companyRes.rows[0]?.value || 'SupplierPro';
+
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: 'landscape',
+      margins: { top: 36, bottom: 36, left: 36, right: 36 },
+      bufferPages: true
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="laporan_penjualan_${validated.group}_${validated.from}_${validated.to}.pdf"`);
+    doc.pipe(res);
+
+    const fmtRp = (num) => {
+      const n = Math.round(parseFloat(num) || 0);
+      const clean = Object.is(n, -0) ? 0 : n;
+      if (clean < 0) return '-Rp ' + Math.abs(clean).toLocaleString('id-ID');
+      return 'Rp ' + clean.toLocaleString('id-ID');
+    };
+    const fmtDateId = (s) => {
+      if (!s) return '-';
+      const p = String(s).split('T')[0].split('-');
+      return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : s;
+    };
+    const fmtMargin = (m) => (m === null || m === undefined || isNaN(m)) ? '-' : `${Number(m).toFixed(1)}%`;
+
+    const groupLabel = validated.group === 'day' ? 'Per Hari' : (validated.group === 'month' ? 'Per Bulan' : 'Per Invoice');
+    const margin = 36;
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const contentWidth = pageWidth - margin * 2;
+
+    const cols = validated.group === 'invoice'
+      ? [
+        { label: 'No. Invoice', width: 105, align: 'left' },
+        { label: 'Tanggal', width: 65, align: 'center' },
+        { label: 'Pelanggan', width: 130, align: 'left' },
+        { label: 'Penj. Bersih', width: 95, align: 'right' },
+        { label: 'HPP', width: 90, align: 'right' },
+        { label: 'Laba', width: 90, align: 'right' },
+        { label: 'Margin', width: 55, align: 'right' },
+        { label: 'Tipe', width: 75, align: 'left' },
+        { label: 'Status', width: 65, align: 'center' }
+      ]
+      : [
+        { label: validated.group === 'day' ? 'Tanggal' : 'Bulan', width: 105, align: 'left' },
+        { label: 'Jml Inv', width: 55, align: 'right' },
+        { label: 'Penj. Kotor', width: 95, align: 'right' },
+        { label: 'Diskon', width: 75, align: 'right' },
+        { label: 'Retur', width: 80, align: 'right' },
+        { label: 'Penj. Bersih', width: 95, align: 'right' },
+        { label: 'HPP', width: 90, align: 'right' },
+        { label: 'Laba Kotor', width: 95, align: 'right' },
+        { label: 'Margin', width: 80, align: 'right' }
+      ];
+
+    let currentY = 36;
+    const drawHeader = () => {
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#111827')
+        .text(`${companyName} — Laporan Penjualan (${groupLabel})`, margin, currentY);
+      currentY += 18;
+      doc.fontSize(9).font('Helvetica').fillColor('#4b5563')
+        .text(`Periode: ${fmtDateId(validated.from)} s/d ${fmtDateId(validated.to)}  |  Basis: DPP (Tanpa PPN)  |  Penjualan Bersih: ${fmtRp(summary.penjualan_bersih)}  |  HPP: ${fmtRp(summary.hpp)}  |  Laba Kotor: ${fmtRp(summary.laba_kotor)}  |  Margin: ${fmtMargin(summary.margin_pct)}`, margin, currentY);
+      currentY += 16;
+
+      doc.rect(margin, currentY, contentWidth, 20).fill('#f3f4f6');
+      let x = margin;
+      doc.fontSize(8).font('Helvetica-Bold').fillColor('#111827');
+      for (const c of cols) {
+        doc.text(c.label, x + 4, currentY + 6, { width: c.width - 8, align: c.align });
+        x += c.width;
+      }
+      currentY += 20;
+    };
+
+    drawHeader();
+    doc.font('Helvetica').fontSize(8);
+
+    const drawRow = (vals, isBold = false) => {
+      if (currentY + 18 > pageHeight - 36) {
+        doc.addPage();
+        currentY = 36;
+        drawHeader();
+        doc.font(isBold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8);
+      }
+      if (isBold) {
+        doc.rect(margin, currentY, contentWidth, 18).fill('#eef2ff');
+      }
+      doc.font(isBold ? 'Helvetica-Bold' : 'Helvetica').fillColor('#111827');
+      let x = margin;
+      vals.forEach((v, idx) => {
+        const c = cols[idx];
+        doc.text(String(v), x + 4, currentY + 5, { width: c.width - 8, align: c.align, ellipsis: true, lineBreak: false });
+        x += c.width;
+      });
+      doc.moveTo(margin, currentY + 18).lineTo(margin + contentWidth, currentY + 18).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
+      currentY += 18;
+    };
+
+    for (const r of result.rows) {
+      if (validated.group === 'invoice') {
+        drawRow([
+          r.id + (r.hpp_estimasi ? ' *' : ''),
+          fmtDateId(r.date),
+          r.customer_name,
+          fmtRp(r.penjualan_bersih),
+          fmtRp(r.hpp),
+          fmtRp(r.laba),
+          fmtMargin(r.margin_pct),
+          r.payment_type_name,
+          r.status
+        ]);
+      } else {
+        const pLabel = validated.group === 'day'
+          ? fmtDateId(r.period)
+          : (r.period + (r.is_partial ? ' (sebagian)' : ''));
+        drawRow([
+          pLabel,
+          r.jml_invoice,
+          fmtRp(r.penjualan_kotor),
+          fmtRp(r.diskon),
+          fmtRp(r.retur),
+          fmtRp(r.penjualan_bersih),
+          fmtRp(r.hpp),
+          fmtRp(r.laba_kotor),
+          fmtMargin(r.margin_pct)
+        ]);
+      }
+    }
+
+    if (validated.group === 'invoice') {
+      drawRow([
+        'TOTAL',
+        `${result.totals.jml_invoice} inv`,
+        '',
+        fmtRp(result.totals.penjualan_bersih),
+        fmtRp(result.totals.hpp),
+        fmtRp(result.totals.laba_kotor),
+        fmtMargin(result.totals.margin_pct),
+        '',
+        ''
+      ], true);
+    } else {
+      drawRow([
+        'TOTAL',
+        result.totals.jml_invoice,
+        fmtRp(result.totals.penjualan_kotor),
+        fmtRp(result.totals.diskon),
+        fmtRp(result.totals.retur),
+        fmtRp(result.totals.penjualan_bersih),
+        fmtRp(result.totals.hpp),
+        fmtRp(result.totals.laba_kotor),
+        fmtMargin(result.totals.margin_pct)
+      ], true);
+    }
+
+    doc.end();
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(err.status || 500).json({ success: false, error: err.message });
+    }
+  }
+});
+
 // --- Laba Rugi Endpoint ---
 app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
   const bulan = parseInt(req.query.bulan, 10);
@@ -4684,50 +5557,29 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
 
   const client = await pool.connect();
   try {
-    // Compute start_date and end_date using MySQL date functions
     const dateRes = await client.query(`
       SELECT
         STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d') AS start_date,
         LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d')) AS end_date
     `, [tahun, bulan, tahun, bulan]);
-    const { start_date, end_date } = dateRes.rows[0];
+    const start_date = formatDateStr(dateRes.rows[0].start_date);
+    const end_date = formatDateStr(dateRes.rows[0].end_date);
 
     console.log(`[Laba Rugi] Date range resolved: ${start_date} → ${end_date}`);
 
-    // 1. PENDAPATAN (Penjualan kotor & diskon)
-    // Use BETWEEN with computed dates; exclude both 'Batal' AND legacy 'Dibatalkan' statuses
-    const resPendapatan = await client.query(`
-      SELECT
-        COALESCE(SUM(total), 0) AS kotor,
-        COALESCE(SUM(COALESCE(discount, 0)), 0) AS diskon
-      FROM sales_invoices
-      WHERE DATE(date) BETWEEN ? AND ?
-        AND status NOT IN ('Batal', 'Dibatalkan', 'Cancel')
-    `, [start_date, end_date]);
+    // 1 & 2. PENDAPATAN (DPP tanpa PPN), RETUR, & HPP TERJUAL
+    const salesSummary = await computeSalesSummary(client, { from: start_date, to: end_date });
+    const penjualanKotor = salesSummary.penjualan_kotor;
+    const diskon = salesSummary.diskon;
+    const retur = salesSummary.retur;
+    const penjualanBersih = salesSummary.penjualan_bersih;
+    const hpp = salesSummary.hpp;
+    const hppReturRusak = salesSummary.hpp_retur_rusak;
+    const labaKotor = salesSummary.laba_kotor;
 
-    const penjualanKotor = parseFloat(resPendapatan.rows[0]?.kotor || 0);
-    const diskon = parseFloat(resPendapatan.rows[0]?.diskon || 0);
-    const penjualanBersih = penjualanKotor - diskon;
-
-    console.log(`[Laba Rugi] Pendapatan: kotor=${penjualanKotor} diskon=${diskon} bersih=${penjualanBersih}`);
-
-    // 2. HPP (Cost of Goods Sold) — uses snapshot HPP per item at time of sale.
-    //    Falls back to current cost_price for older records without snapshot.
-    const resHPP = await client.query(`
-      SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.cost_price_snapshot, 0), p.cost_price)), 0) AS hpp
-      FROM invoice_items ii
-      JOIN sales_invoices si ON si.id = ii.invoice_id
-      LEFT JOIN products p ON p.id = ii.product_id
-      WHERE DATE(si.date) BETWEEN ? AND ?
-        AND si.status NOT IN ('Batal', 'Dibatalkan', 'Cancel')
-    `, [start_date, end_date]);
-    const hpp = parseFloat(resHPP.rows[0]?.hpp || 0);
-    const labaKotor = penjualanBersih - hpp;
-
-    console.log(`[Laba Rugi] HPP=${hpp} LabaKotor=${labaKotor}`);
+    console.log(`[Laba Rugi] Pendapatan(DPP): kotor=${penjualanKotor} diskon=${diskon} retur=${retur} bersih=${penjualanBersih} HPP=${hpp} LabaKotor=${labaKotor}`);
 
     // 3. BEBAN OPERASIONAL (all OUT transactions not linked to system categories like Pembelian Stok/Penyesuaian Stok)
-    // Uses is_system=false from cash_categories to be database-driven — no hardcoded category names
     const resBeban = await client.query(`
       SELECT ct.category, COALESCE(SUM(ct.amount), 0) AS total
       FROM cash_transactions ct
@@ -4735,20 +5587,20 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
         AND (ct.status IS NULL OR ct.status != 'cancelled')
         AND ct.invoice_id IS NULL
         AND ct.purchase_order_id IS NULL
-        AND ct.date BETWEEN ? AND ?
+        AND ct.date >= ? AND ct.date < DATE_ADD(?, INTERVAL 1 DAY)
         AND ct.category NOT IN (
           SELECT name FROM cash_categories WHERE is_system = 1 AND (type = 'OUT' OR type = 'BOTH')
         )
       GROUP BY ct.category
     `, [start_date, end_date]);
 
-    // 3b. BEBAN FEE CUSTOMER — sourced from invoice_items.customer_fee (not cash_transactions)
+    // 3b. BEBAN FEE CUSTOMER — sourced from invoice_items.customer_fee (tidak diubah, tetap terpisah di bawah Laba Kotor)
     const resFee = await client.query(`
       SELECT COALESCE(SUM(ii.customer_fee), 0) AS total_fee
       FROM invoice_items ii
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE DATE(si.date) BETWEEN ? AND ?
-        AND si.status NOT IN ('Batal', 'Dibatalkan', 'Cancel')
+      WHERE si.date >= ? AND si.date < DATE_ADD(?, INTERVAL 1 DAY)
+        AND ${ACTIVE_INV_STATUS_PREDICATE}
     `, [start_date, end_date]);
     const bebanFeeCustomer = parseFloat(resFee.rows[0]?.total_fee || 0);
 
@@ -4759,15 +5611,13 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
     const totalBebanOperasional = rincianBeban.reduce((sum, item) => sum + item.total, 0) + bebanFeeCustomer;
     const labaOperasional = labaKotor - totalBebanOperasional;
 
-    console.log(`[Laba Rugi] BebanOperasional=${totalBebanOperasional} (incl. FeeCustomer=${bebanFeeCustomer}) LabaOperasional=${labaOperasional}`);
-
-    // 4. PENYESUAIAN STOK (stock-opname adjustments — still tracked by category name)
+    // 4. PENYESUAIAN STOK
     const resStok = await client.query(`
       SELECT type, COALESCE(SUM(amount), 0) AS total
       FROM cash_transactions
       WHERE category = 'Penyesuaian Stok'
         AND (status IS NULL OR status != 'cancelled')
-        AND date BETWEEN $1 AND $2
+        AND date >= ? AND date < DATE_ADD(?, INTERVAL 1 DAY)
       GROUP BY type
     `, [start_date, end_date]);
 
@@ -4779,24 +5629,20 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
     });
     const netPenyesuaianStok = penyesuaianStokMasuk - penyesuaianStokKeluar;
 
-    // 5. PENDAPATAN LAIN-LAIN (all IN transactions not linked to system IN categories)
-    // Database-driven: system IN categories (Penjualan, Pelunasan Piutang, Penyesuaian Stok) are excluded
+    // 5. PENDAPATAN LAIN-LAIN
     const resLain = await client.query(`
       SELECT COALESCE(SUM(ct.amount), 0) AS total
       FROM cash_transactions ct
       WHERE ct.type = 'IN'
         AND (ct.status IS NULL OR ct.status != 'cancelled')
-        AND ct.date BETWEEN ? AND ?
+        AND ct.date >= ? AND ct.date < DATE_ADD(?, INTERVAL 1 DAY)
         AND ct.category NOT IN (
           SELECT name FROM cash_categories WHERE is_system = 1 AND (type = 'IN' OR type = 'BOTH')
         )
     `, [start_date, end_date]);
     const pendapatanLain = parseFloat(resLain.rows[0]?.total || 0);
 
-    // LABA BERSIH
     const labaBersih = labaOperasional + netPenyesuaianStok + pendapatanLain;
-
-    console.log(`[Laba Rugi] PendapatanLain=${pendapatanLain} LabaBersih=${labaBersih}`);
 
     res.json({
       success: true,
@@ -4805,10 +5651,14 @@ app.get('/api/laporan/laba-rugi', authenticateToken, authorizeRoles('admin', 'fi
         pendapatan: {
           kotor: penjualanKotor,
           diskon: diskon,
+          retur: retur,
+          returDanDiskon: diskon + retur,
           bersih: penjualanBersih
         },
         hpp: hpp,
+        hppReturRusak: hppReturRusak,
         labaKotor: labaKotor,
+        marginPersen: salesSummary.margin_pct,
         operasional: {
           rincian: rincianBeban,
           total: totalBebanOperasional,
@@ -4965,36 +5815,21 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
         LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d')) AS end_date,
         DAY(LAST_DAY(STR_TO_DATE(CONCAT(?, '-', LPAD(?, 2, '0'), '-01'), '%Y-%m-%d'))) AS days_in_month
     `, [tahun, bulan, tahun, bulan, tahun, bulan]);
-    const { start_date, end_date, days_in_month } = dateRes.rows[0];
+    const start_date = formatDateStr(dateRes.rows[0].start_date);
+    const end_date = formatDateStr(dateRes.rows[0].end_date);
+    const days_in_month = parseInt(dateRes.rows[0].days_in_month, 10);
 
-    // 1. Total penjualan & jumlah invoice
-    const resSales = await client.query(`
-      SELECT
-        COALESCE(SUM(total), 0) AS total_penjualan,
-        COUNT(id) AS jumlah_invoice
-      FROM sales_invoices
-      WHERE DATE(date) BETWEEN ? AND ?
-        AND status NOT IN ('Dibatalkan', 'Batal', 'Cancel')
-    `, [start_date, end_date]);
-    const totalPenjualan = parseFloat(resSales.rows[0].total_penjualan);
-    const jumlahInvoice = parseInt(resSales.rows[0].jumlah_invoice);
+    // 1 & 2. Penjualan bersih (DPP), jumlah invoice, HPP terjual, dan margin
+    const summary = await computeSalesSummary(client, { from: start_date, to: end_date });
+    const totalPenjualan = summary.penjualan_bersih;
+    const jumlahInvoice = summary.jumlah_invoice;
+    const divisorDays = summary.hari_pembagi > 0 ? summary.hari_pembagi : days_in_month;
+    const todayWITA = getTodayWITA();
+    const isCurrentMonth = `${tahun}-${String(bulan).padStart(2, '0')}` === todayWITA.slice(0, 7);
 
-    const rataHari = jumlahInvoice > 0 ? totalPenjualan / parseInt(days_in_month) : 0;
-    const rataInvoice = jumlahInvoice > 0 ? totalPenjualan / jumlahInvoice : 0;
-
-    // 2. HPP for margin calculation — uses snapshot HPP per item
-    const resHPP = await client.query(`
-      SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.cost_price_snapshot, 0), p.cost_price)), 0) AS total_hpp
-      FROM invoice_items ii
-      LEFT JOIN products p ON p.id = ii.product_id
-      JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE DATE(si.date) BETWEEN ? AND ?
-        AND si.status NOT IN ('Batal', 'Dibatalkan', 'Cancel')
-    `, [start_date, end_date]);
-    const totalHPP = parseFloat(resHPP.rows[0].total_hpp);
-    const margin = totalPenjualan > 0
-      ? ((totalPenjualan - totalHPP) / totalPenjualan) * 100
-      : 0;
+    const rataHari = divisorDays > 0 ? totalPenjualan / divisorDays : 0;
+    const rataInvoice = summary.rata_nilai_invoice;
+    const margin = summary.margin_pct;
 
     // 3. Customer retention
     const resRetention = await client.query(`
@@ -5003,9 +5838,9 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
         COUNT(DISTINCT CASE WHEN cnt > 1 THEN customer_id END) AS repeat_customers
       FROM (
         SELECT customer_id, COUNT(id) AS cnt
-        FROM sales_invoices
-        WHERE DATE(date) BETWEEN ? AND ?
-          AND status NOT IN ('Dibatalkan', 'Batal', 'Cancel')
+        FROM sales_invoices si
+        WHERE si.date >= ? AND si.date < DATE_ADD(?, INTERVAL 1 DAY)
+          AND ${ACTIVE_INV_STATUS_PREDICATE}
         GROUP BY customer_id
       ) sub
     `, [start_date, end_date]);
@@ -5019,8 +5854,8 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
       FROM invoice_items ii
       JOIN products p ON p.id = ii.product_id
       JOIN sales_invoices si ON si.id = ii.invoice_id
-      WHERE DATE(si.date) BETWEEN ? AND ?
-        AND si.status NOT IN ('Dibatalkan', 'Batal', 'Cancel')
+      WHERE si.date >= ? AND si.date < DATE_ADD(?, INTERVAL 1 DAY)
+        AND ${ACTIVE_INV_STATUS_PREDICATE}
       GROUP BY p.name
       ORDER BY total_nilai DESC
       LIMIT 5
@@ -5037,11 +5872,11 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
 
     // 5. Top 5 pelanggan teratas
     const resCustomers = await client.query(`
-      SELECT c.name, COALESCE(SUM(si.total), 0) AS total_belanja
+      SELECT c.name, COALESCE(SUM(si.subtotal - COALESCE(si.discount, 0)), 0) AS total_belanja
       FROM sales_invoices si
       JOIN customers c ON c.id = si.customer_id
-      WHERE DATE(si.date) BETWEEN ? AND ?
-        AND si.status NOT IN ('Dibatalkan', 'Batal', 'Cancel')
+      WHERE si.date >= ? AND si.date < DATE_ADD(?, INTERVAL 1 DAY)
+        AND ${ACTIVE_INV_STATUS_PREDICATE}
       GROUP BY c.name
       ORDER BY total_belanja DESC
       LIMIT 5
@@ -5055,6 +5890,9 @@ app.get('/api/laporan/performa', authenticateToken, authorizeRoles('admin', 'fin
       success: true,
       data: {
         rata_hari: rataHari,
+        divisor_days: divisorDays,
+        days_in_month: days_in_month,
+        is_current_month: isCurrentMonth,
         rata_invoice: rataInvoice,
         jumlah_invoice: jumlahInvoice,
         margin: margin,
@@ -6084,10 +6922,10 @@ app.post('/api/purchases', authenticateToken, authorizeRoles('admin', 'gudang'),
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -6211,10 +7049,10 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -6281,7 +7119,7 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
       status = instant ? 'Selesai' : (effectivePaid >= finalTotal ? 'Selesai' : 'Dalam Proses');
     }
 
-    const oldItemsRes = await client.query('SELECT product_id, quantity FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
+    const oldItemsRes = await client.query('SELECT product_id, quantity, cost FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
 
     // B3 Soft-Lock check for PO: check if any item qty decreased or item was removed
     const oldPoQtyMap = {};
@@ -6322,10 +7160,18 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
     }
 
     for (const item of oldItemsRes.rows) {
-      const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
+      const prodRes = await client.query('SELECT stock, cost_price FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
       const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
-      const nextStock = curStock - parseFloat(item.quantity || 0);
-      await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [item.quantity, item.product_id]);
+      const curCost = parseFloat(prodRes.rows[0]?.cost_price || 0);
+      const oldQty = parseFloat(item.quantity || 0);
+      const oldCost = parseFloat(item.cost || 0);
+      const nextStock = curStock - oldQty;
+      let reversedCost = curCost;
+      if (nextStock > 0) {
+        const calcCost = ((curStock * curCost) - (oldQty * oldCost)) / nextStock;
+        reversedCost = calcCost >= 0 ? calcCost : curCost;
+      }
+      await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [nextStock, reversedCost, item.product_id]);
       await recordStockMove(client, {
         product_id: item.product_id,
         tanggal: poDate ? poDate + ' 12:00:00' : null,
@@ -6334,7 +7180,7 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
         ref_id: poId,
         ref_no: poId,
         qty_masuk: 0,
-        qty_keluar: parseFloat(item.quantity || 0),
+        qty_keluar: oldQty,
         qty_sebelum: curStock,
         qty_sesudah: nextStock,
         keterangan: `Koreksi Edit PO ${poId} (reversal item lama)${correctionReason ? ' - ' + correctionReason : ''}`,
@@ -6352,10 +7198,15 @@ app.put('/api/purchases/:id', authenticateToken, authorizeRoles('admin', 'gudang
         const cost = parseFloat(item.cost || item.cost_price || item.price || 0);
 
         await client.query('INSERT INTO purchase_order_items (id, purchase_order_id, product_id, quantity, cost) VALUES ($1, $2, $3, $4, $5)', [itemId, poId, prodId, qty, cost]);
-        const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [prodId]);
+        const prodRes = await client.query('SELECT stock, cost_price FROM products WHERE id = ? FOR UPDATE', [prodId]);
         const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
+        const curCost = parseFloat(prodRes.rows[0]?.cost_price || 0);
         const nextStock = curStock + qty;
-        await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [qty, prodId]);
+        let newCost = cost;
+        if (curStock > 0 && nextStock > 0) {
+          newCost = ((curStock * curCost) + (qty * cost)) / nextStock;
+        }
+        await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [nextStock, newCost, prodId]);
         await recordStockMove(client, {
           product_id: prodId,
           tanggal: poDate ? poDate + ' 12:00:00' : null,
@@ -6413,12 +7264,20 @@ app.put('/api/purchases/:id/cancel', authenticateToken, authorizeRoles('admin', 
       return res.json({ success: true });
     }
 
-    const itemsRes = await client.query('SELECT product_id, quantity FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
+    const itemsRes = await client.query('SELECT product_id, quantity, cost FROM purchase_order_items WHERE purchase_order_id = $1', [poId]);
     for (const item of itemsRes.rows) {
-      const prodRes = await client.query('SELECT stock FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
+      const prodRes = await client.query('SELECT stock, cost_price FROM products WHERE id = ? FOR UPDATE', [item.product_id]);
       const curStock = parseFloat(prodRes.rows[0]?.stock || 0);
-      const nextStock = curStock - parseFloat(item.quantity || 0);
-      await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [item.quantity, item.product_id]);
+      const curCost = parseFloat(prodRes.rows[0]?.cost_price || 0);
+      const itemQty = parseFloat(item.quantity || 0);
+      const itemCost = parseFloat(item.cost || 0);
+      const nextStock = curStock - itemQty;
+      let reversedCost = curCost;
+      if (nextStock > 0) {
+        const calcCost = ((curStock * curCost) - (itemQty * itemCost)) / nextStock;
+        reversedCost = calcCost >= 0 ? calcCost : curCost;
+      }
+      await client.query('UPDATE products SET stock = ?, cost_price = ? WHERE id = ?', [nextStock, reversedCost, item.product_id]);
       await recordStockMove(client, {
         product_id: item.product_id,
         tipe: 'koreksi_edit',
@@ -6426,7 +7285,7 @@ app.put('/api/purchases/:id/cancel', authenticateToken, authorizeRoles('admin', 
         ref_id: poId,
         ref_no: poId,
         qty_masuk: 0,
-        qty_keluar: parseFloat(item.quantity || 0),
+        qty_keluar: itemQty,
         qty_sebelum: curStock,
         qty_sesudah: nextStock,
         keterangan: `Pembatalan PO ${poId}`,
@@ -6551,7 +7410,7 @@ async function syncInvoicePaymentState({
       paidDate = status === 'Lunas' ? (currentInv.paid_date || invDate) : null;
     }
 
-  // ── Kasus B: Tidak ada cicilan aktif ──
+    // ── Kasus B: Tidak ada cicilan aktif ──
   } else {
     const normalizedReq = (requestedStatus || '').toLowerCase();
 
@@ -6662,10 +7521,10 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir',
     const settingsRes = await client.query(`SELECT \`key\`, value FROM settings WHERE \`key\` IN ('ppn_enabled', 'pajak_default')`);
     const settingsMap = {};
     settingsRes.rows.forEach(r => settingsMap[r.key] = r.value);
-    
+
     const ppnEnabled = settingsMap['ppn_enabled'] === 'true' || settingsMap['ppn_enabled'] === '1' || settingsMap['ppn_enabled'] === true;
     const pajakDefault = parseFloat(settingsMap['pajak_default'] || 11);
-    
+
     let subtotal = 0;
     if (items && Array.isArray(items)) {
       items.forEach(item => {
@@ -6724,11 +7583,25 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir',
 
     // 4. Stock adjustment via DELTA (Hanya untuk invoice yang bukan import outstanding)
     if (!currentInv.is_outstanding_import) {
-      const oldItemsRes = await client.query('SELECT product_id, quantity FROM invoice_items WHERE invoice_id = ? FOR UPDATE', [invId]);
+      const oldItemsRes = await client.query(
+        'SELECT product_id, quantity, cost_price_snapshot, hpp_satuan, hpp_estimasi FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC FOR UPDATE',
+        [invId]
+      );
       const oldQtyMap = {};
+      const oldSnapshotQueues = {};
       for (const row of oldItemsRes.rows) {
         const pId = row.product_id;
         oldQtyMap[pId] = (oldQtyMap[pId] || 0) + parseFloat(row.quantity || 0);
+        const key = String(pId || '');
+        if (!oldSnapshotQueues[key]) oldSnapshotQueues[key] = [];
+        const existingHppSatuan = parseFloat(row.hpp_satuan || 0) > 0
+          ? parseFloat(row.hpp_satuan)
+          : parseFloat(row.cost_price_snapshot || 0);
+        oldSnapshotQueues[key].push({
+          cost_price_snapshot: parseFloat(row.cost_price_snapshot || 0),
+          hpp_satuan: Math.round(existingHppSatuan * 100) / 100,
+          hpp_estimasi: Number(row.hpp_estimasi || 0)
+        });
       }
 
       const newQtyMap = {};
@@ -6835,12 +7708,32 @@ app.put('/api/invoices/:id', authenticateToken, authorizeRoles('admin', 'kasir',
           const itemFeeNotes = req.user.role === 'admin' ? (item.fee_notes || null) : null;
           if (itemFee < 0) throw new Error('customer_fee tidak boleh negatif');
 
-          const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [prodId]);
-          const costSnapshot = parseFloat(costRes.rows[0]?.cost_price || item.cost_price || 0);
+          // Item lama mempertahankan hpp_satuan & hpp_estimasi asalnya; item baru ambil HPP produk saat ini
+          const qKey = String(prodId || '');
+          const preserved = (oldSnapshotQueues[qKey] && oldSnapshotQueues[qKey].length > 0)
+            ? oldSnapshotQueues[qKey].shift()
+            : null;
+
+          let costSnapshot = 0;
+          let hppSatuan = 0;
+          let hppEstimasi = 0;
+          if (preserved) {
+            costSnapshot = preserved.cost_price_snapshot;
+            hppSatuan = preserved.hpp_satuan;
+            hppEstimasi = preserved.hpp_estimasi;
+          } else {
+            const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [prodId]);
+            const rawProdCost = costRes.rows.length > 0 ? costRes.rows[0].cost_price : null;
+            costSnapshot = (rawProdCost !== null && rawProdCost !== undefined)
+              ? (parseFloat(rawProdCost) || 0)
+              : (parseFloat(item.cost_price) || 0);
+            hppSatuan = Math.round(costSnapshot * 100) / 100;
+            hppEstimasi = 0;
+          }
 
           await client.query(
-            'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [itemId, invId, prodId, qty, price, costSnapshot, itemFee, itemFeeNotes]
+            'INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, hpp_satuan, hpp_estimasi, customer_fee, fee_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [itemId, invId, prodId, qty, price, costSnapshot, hppSatuan, hppEstimasi, itemFee, itemFeeNotes]
           );
         }
       }
@@ -6954,22 +7847,37 @@ app.post('/api/finance/cashflow', authenticateToken, authorizeRoles('admin', 'fi
 // --- Reports & Dashboard API ---
 app.get('/api/finance/reports/profit-loss', authenticateToken, authorizeRoles('admin', 'finance'), async (req, res) => {
   try {
-    const salesRes = await pool.query("SELECT SUM(total) as revenue FROM sales_invoices WHERE status NOT IN ('Batal', 'Cancel', 'Dibatalkan')");
-    const revenue = parseFloat(salesRes.rows[0].revenue || 0);
+    const invRes = await pool.query(`
+      SELECT
+        COALESCE(SUM(si.subtotal), 0) AS kotor,
+        COALESCE(SUM(COALESCE(si.discount, 0)), 0) AS diskon
+      FROM sales_invoices si
+      WHERE ${ACTIVE_INV_STATUS_PREDICATE}
+    `);
+    const retRes = await pool.query(`
+      SELECT
+        COALESCE(SUM(${RET_DPP_ITEM_EXPR}), 0) AS retur_nilai,
+        COALESCE(SUM(CASE WHEN sri.condition_type = 'kembali_ke_stok' THEN sri.quantity * ${RET_ITEM_HPP_EXPR} ELSE 0 END), 0) AS hpp_retur_kembali
+      FROM sales_return_items sri
+      JOIN sales_returns sr ON sr.id = sri.return_id
+      JOIN sales_invoices si ON si.id = sr.invoice_id
+      WHERE ${ACTIVE_INV_STATUS_PREDICATE}
+    `);
+    const revenue = parseFloat(invRes.rows[0]?.kotor || 0) - parseFloat(invRes.rows[0]?.diskon || 0) - parseFloat(retRes.rows[0]?.retur_nilai || 0);
 
     const hppRes = await pool.query(`
-      SELECT SUM(ii.quantity * p.cost_price) as hpp 
+      SELECT COALESCE(SUM(ii.quantity * ${ITEM_HPP_EXPR}), 0) as hpp
       FROM invoice_items ii
-      JOIN products p ON ii.product_id = p.id
       JOIN sales_invoices si ON ii.invoice_id = si.id
-      WHERE si.status NOT IN ('Batal', 'Cancel', 'Dibatalkan')
+      WHERE ${ACTIVE_INV_STATUS_PREDICATE}
     `);
-    const hpp = parseFloat(hppRes.rows[0].hpp || 0);
+    const hpp = parseFloat(hppRes.rows[0]?.hpp || 0) - parseFloat(retRes.rows[0]?.hpp_retur_kembali || 0);
 
     const expensesRes = await pool.query(`
       SELECT category, SUM(amount) as total 
       FROM cash_transactions 
-      WHERE type = 'OUT' AND category NOT IN ('Pembelian Stok', 'Hutang')
+      WHERE type = 'OUT' AND (status IS NULL OR status != 'cancelled')
+        AND category NOT IN ('Pembelian Stok', 'Hutang', 'Penyesuaian Stok')
       GROUP BY category
     `);
 
@@ -7180,7 +8088,7 @@ app.get('/login', (req, res) => {
   try {
     const newAdminPassword = 'Admin@2026';
     const hashedPassword = await hashPassword(newAdminPassword);
-    
+
     await pool.query(`
       INSERT IGNORE INTO users (username, name, email, password_hash, role, active)
       VALUES ('superadmin', 'Super Administrator', 
@@ -7306,7 +8214,7 @@ app.get('/api/finance/reconciliation-status', authenticateToken, authorizeRoles(
 async function runDailyReconciliation() {
   const logFile = path.join(__dirname, 'reconciliation.log');
   const now = new Date();
-  
+
   // Reconcile for current month and previous month
   const targetMonths = [
     { month: now.getMonth() + 1, year: now.getFullYear() }
@@ -7329,7 +8237,7 @@ async function runDailyReconciliation() {
     for (const target of targetMonths) {
       const { month, year } = target;
       const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      
+
       const lastDayResult = await client.query(`SELECT LAST_DAY(?) AS end_date`, [startDate]);
       const rawEndDate = lastDayResult.rows[0]?.end_date;
       let endDate = '';
@@ -7344,22 +8252,9 @@ async function runDailyReconciliation() {
 
       logEntries.push(`Reconciling Periode: ${startDate} -> ${endDate}`);
 
-      // 1. Laba Rugi
-      const resPend = await client.query(`
-        SELECT COALESCE(SUM(total), 0) AS kotor, COALESCE(SUM(COALESCE(discount, 0)), 0) AS diskon
-        FROM sales_invoices WHERE DATE(date) BETWEEN ? AND ? AND status NOT IN ('Batal', 'Dibatalkan', 'Cancel')
-      `, [startDate, endDate]);
-      const penjualanKotor = parseFloat(resPend.rows[0]?.kotor || 0);
-      const diskon = parseFloat(resPend.rows[0]?.diskon || 0);
-      const penjualanBersih = penjualanKotor - diskon;
-
-      const resHpp = await client.query(`
-        SELECT COALESCE(SUM(ii.quantity * COALESCE(NULLIF(ii.cost_price_snapshot, 0), p.cost_price)), 0) AS hpp
-        FROM invoice_items ii JOIN sales_invoices si ON si.id = ii.invoice_id LEFT JOIN products p ON p.id = ii.product_id
-        WHERE DATE(si.date) BETWEEN ? AND ? AND si.status NOT IN ('Batal', 'Dibatalkan', 'Cancel')
-      `, [startDate, endDate]);
-      const hpp = parseFloat(resHpp.rows[0]?.hpp || 0);
-      const labaKotor = penjualanBersih - hpp;
+      // 1. Laba Rugi (basis DPP, termasuk retur & snapshot HPP)
+      const recSummary = await computeSalesSummary(client, { from: startDate, to: endDate });
+      const labaKotor = recSummary.laba_kotor;
 
       // Beban
       const resBeban = await client.query(`
@@ -7403,7 +8298,7 @@ async function runDailyReconciliation() {
         WHERE status NOT IN ('Selesai', 'Dibatalkan', 'Batal') AND DATE(date) <= ?
       `, [endDate]);
       const hutangUsaha = parseFloat(resHutang.rows[0].hutang);
-      
+
       const resModal = await client.query(`SELECT value FROM settings WHERE \`key\` = 'modal_pemilik'`);
       const modalPemilik = parseFloat(resModal.rows[0]?.value || 0);
       const labaDitahan = totalAset - hutangUsaha - modalPemilik;
@@ -7660,7 +8555,7 @@ app.post('/api/proformas', authenticateToken, authorizeRoles('admin', 'kasir'), 
     // Calculate berlaku_hingga from order_date (not today) — string arithmetic is safe for dates
     const [oy, om, od] = orderDateStr.split('-').map(Number);
     const berlakuDt = new Date(oy, om - 1, od + berlakuHari);
-    const berlakuStr = `${berlakuDt.getFullYear()}-${String(berlakuDt.getMonth()+1).padStart(2,'0')}-${String(berlakuDt.getDate()).padStart(2,'0')}`;
+    const berlakuStr = `${berlakuDt.getFullYear()}-${String(berlakuDt.getMonth() + 1).padStart(2, '0')}-${String(berlakuDt.getDate()).padStart(2, '0')}`;
 
     const proformaNo = await generateProformaNo(client, orderDateStr);
     const userId = req.user.id;
@@ -7670,7 +8565,7 @@ app.post('/api/proformas', authenticateToken, authorizeRoles('admin', 'kasir'), 
         subtotal, discount, ppn_rate, ppn_amount, ppn_enabled, total, status, user_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aktif', ?)`,
       [proformaNo, customer_id, orderDateStr, berlakuStr, payment_type_id,
-       subtotal, diskon, ppnRate, ppnAmount, ppnEnabled ? 1 : 0, total, userId]
+        subtotal, diskon, ppnRate, ppnAmount, ppnEnabled ? 1 : 0, total, userId]
     );
 
     // Get the inserted pk
@@ -8345,7 +9240,7 @@ app.post('/api/proformas/:pk/convert', authenticateToken, authorizeRoles('admin'
         const days = parseInt(match[2], 10);
         const [iy, im, id_] = invoiceDateStr.split('-').map(Number);
         const dt = new Date(iy, im - 1, id_ + days);
-        finalDueDate = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+        finalDueDate = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
       }
     }
 
@@ -8356,7 +9251,7 @@ app.post('/api/proformas/:pk/convert', authenticateToken, authorizeRoles('admin'
         payment_type_id, due_date, paid_date, status, user_id, is_outstanding_import)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       [invoiceId, invoiceDateStr, pf.customer_id, subtotal, diskon, taxAmount, finalTotal,
-       effectivePaid, finalPaymentTypeId, finalDueDate, paidDate, status, userId]
+        effectivePaid, finalPaymentTypeId, finalDueDate, paidDate, status, userId]
     );
 
     // Insert invoice items & reduce stock
@@ -8368,11 +9263,12 @@ app.post('/api/proformas/:pk/convert', authenticateToken, authorizeRoles('admin'
       await client.query('UPDATE products SET stock = stock - ? WHERE id = ?', [item.quantity, item.id]);
       const costRes = await client.query('SELECT cost_price FROM products WHERE id = ?', [item.id]);
       const costSnapshot = parseFloat(costRes.rows[0]?.cost_price || 0);
+      const hppSatuan = Math.round(costSnapshot * 100) / 100;
       await client.query(
-        `INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, customer_fee, fee_notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, cost_price_snapshot, hpp_satuan, hpp_estimasi, customer_fee, fee_notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         [Date.now().toString() + Math.floor(Math.random() * 1000), invoiceId, item.id,
-         item.quantity, item.price, costSnapshot, item.customer_fee || 0, item.fee_notes || null]
+        item.quantity, item.price, costSnapshot, hppSatuan, item.customer_fee || 0, item.fee_notes || null]
       );
       await recordStockMove(client, {
         product_id: item.id,
@@ -8507,7 +9403,7 @@ app.post('/api/invoices/:id/proforma', authenticateToken, authorizeRoles('admin'
         subtotal, discount, ppn_rate, ppn_amount, ppn_enabled, total, status, user_id, invoice_id, sumber)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dikonversi', ?, ?, 'dari_invoice')`,
       [proformaNo, inv.customer_id, orderDateStr, berlakuStr, inv.payment_type_id,
-       subtotal, diskon, ppnRate, ppnAmount, ppnEnabled, total, userId, invoiceId]
+        subtotal, diskon, ppnRate, ppnAmount, ppnEnabled, total, userId, invoiceId]
     );
     const pkRes = await client.query('SELECT LAST_INSERT_ID() AS pk');
     const proformaPk = Number(pkRes.rows[0].pk);
@@ -8522,7 +9418,7 @@ app.post('/api/invoices/:id/proforma', authenticateToken, authorizeRoles('admin'
           quantity, price, subtotal_item, customer_fee, fee_notes, cost_price_snapshot)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [proformaPk, item.product_id, item.product_name_snapshot, item.unit_name_snapshot,
-         qty, price, subtotalItem, parseFloat(item.customer_fee || 0), item.fee_notes || null, parseFloat(item.cost_price_snapshot || 0)]
+          qty, price, subtotalItem, parseFloat(item.customer_fee || 0), item.fee_notes || null, parseFloat(item.cost_price_snapshot || 0)]
       );
     }
 
@@ -8640,7 +9536,9 @@ app.post('/api/invoices/:id/returns', authenticateToken, authorizeRoles('admin',
       }
 
       const origPrice = parseFloat(orig.price || 0);
-      const snapshotCost = parseFloat(orig.cost_price_snapshot || 0);
+      const origHpp = parseFloat(orig.hpp_satuan || 0);
+      const origSnap = parseFloat(orig.cost_price_snapshot || 0);
+      const snapshotCost = origHpp > 0 ? origHpp : origSnap;
       const itemSubtotal = origPrice * qty;
 
       // Net proportional refund
